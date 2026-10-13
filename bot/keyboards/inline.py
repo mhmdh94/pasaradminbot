@@ -1,27 +1,45 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 
 
-def admin_main_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🛒 خرید حجم", callback_data="buy_volume")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📦 مدیریت پلن‌ها", callback_data="manage_plans"),
-        InlineKeyboardButton(text="🖥 مدیریت پنل‌ها", callback_data="manage_panels")
-    )
-    builder.row(
-        InlineKeyboardButton(text="💳 تنظیمات کارت", callback_data="card_settings"),
-        InlineKeyboardButton(text="📋 سفارش‌های در انتظار", callback_data="pending_orders")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🗄 بک‌آپ دیتابیس", callback_data="backup_now"),
-        InlineKeyboardButton(text="ℹ️ وضعیت ربات", callback_data="bot_status")
-    )
-    return builder.as_markup()
+# ==================== REPLY KEYBOARDS ====================
 
+def user_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="🛒 خرید حجم"))
+    builder.row(KeyboardButton(text="📋 سفارش‌های من"), KeyboardButton(text="ℹ️ راهنما"))
+    if is_admin:
+        builder.row(KeyboardButton(text="⚙️ پنل ادمین"))
+    return builder.as_markup(resize_keyboard=True)
+
+
+def admin_panel_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="🛒 خرید حجم (ادمین)"))
+    builder.row(
+        KeyboardButton(text="📦 مدیریت پلن‌ها"),
+        KeyboardButton(text="🖥 مدیریت پنل‌ها"),
+    )
+    builder.row(
+        KeyboardButton(text="💳 تنظیمات کارت"),
+        KeyboardButton(text="📋 سفارش‌های در انتظار"),
+    )
+    builder.row(
+        KeyboardButton(text="🗄 بک‌آپ دیتابیس"),
+        KeyboardButton(text="ℹ️ وضعیت ربات"),
+    )
+    builder.row(KeyboardButton(text="🔙 بازگشت به منوی اصلی"))
+    return builder.as_markup(resize_keyboard=True)
+
+
+def cancel_reply() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="❌ انصراف"))
+    return builder.as_markup(resize_keyboard=True)
+
+
+# ==================== INLINE KEYBOARDS ====================
 
 def panels_list(panels: List[Dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -100,7 +118,7 @@ def buy_select_panel(panels: List[Dict]) -> InlineKeyboardMarkup:
             )
         )
     builder.row(
-        InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu")
+        InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_buy")
     )
     return builder.as_markup()
 
@@ -115,7 +133,7 @@ def buy_select_plan(plans: List[Dict]) -> InlineKeyboardMarkup:
             )
         )
     builder.row(
-        InlineKeyboardButton(text="🔙 انصراف", callback_data="admin_menu")
+        InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_buy")
     )
     return builder.as_markup()
 
@@ -137,9 +155,9 @@ def cancel_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def back_to_menu() -> InlineKeyboardMarkup:
+def back_to_admin() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="admin_menu")
+        InlineKeyboardButton(text="🔙 پنل ادمین", callback_data="admin_menu")
     )
     return builder.as_markup()
