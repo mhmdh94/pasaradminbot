@@ -121,7 +121,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
             pass
 
     admin = is_admin(uid)
-    text = "👋 به ربات خرید حجم پاسارگارد خوش آمدید.\n\nاز منوی زیر استفاده کنید:"
+    text = "👋 به ربات خرید حجم پنل خوش آمدید.\n\nاز منوی زیر استفاده کنید:"
     if admin:
         text += "\n\n⚙️ شما ادمین هستید."
     await message.answer(text, reply_markup=user_main_keyboard(is_admin=admin))
@@ -163,7 +163,6 @@ async def user_profile(message: Message):
         f"آیدی: <code>{uid}</code>",
         f"نام: {message.from_user.full_name or '-'}",
         f"یوزرنیم: @{message.from_user.username or '-'}",
-        f"جمع واریزی: {stats.get('total_paid', 0):,} تومان",
         f"جمع حجم خریداری‌شده: {stats.get('total_volume', 0)} گیگ",
         f"تعداد سفارش موفق: {stats.get('paid_count', 0)}",
     ]
@@ -386,23 +385,6 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
     await db.update_order(order_id, receipt_file_id=file_id, status="pending")
     order = await db.get_order(order_id)
     panel = await db.get_panel(order["panel_id"])
-
-    # auto approve for user if flag set
-    u = await db.get_bot_user(message.from_user.id)
-    auto = bool(u and u.get("auto_approve"))
-    if auto:
-        api = await get_panel_api(order["panel_id"])
-        if api:
-            result = await api.add_volume_to_admin(order["username"], order["volume_gb"])
-            if result["success"]:
-                await db.update_order(order_id, status="paid")
-                await state.clear()
-                await message.answer(
-                    f"✅ پرداخت خودکار تأیید شد.\n{result['message']}",
-                    reply_markup=user_main_keyboard(is_admin=is_admin(message.from_user.id)),
-                )
-                await report(bot, f"✅ خرید خودکار | {order['username']} | {order['volume_gb']}GB | {order['price']:,}ت")
-                return
 
     caption = (
         "🧾 رسید پرداخت\n\n"
@@ -1128,10 +1110,22 @@ async def assign_save(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
         return
     data = await state.get_data()
-    await db.assign_user_panel(data["assign_uid"], data["panel_id"], message.text.strip())
+    uname = message.text.strip()
+    api = await get_panel_api(data["panel_id"])
+    if not api:
+        await message.answer("❌ اتصال به پنل ناموفق.")
+        return
+    admin_info = await api.get_admin(uname)
+    if not admin_info or admin_info.get("error"):
+        await message.answer(
+            f"❌ ادمینی با نام «{uname}» در پنل پیدا نشد. دوباره وارد کنید:",
+            reply_markup=cancel_reply(),
+        )
+        return
+    await db.assign_user_panel(data["assign_uid"], data["panel_id"], uname)
     await state.clear()
     await message.answer(
-        f"✅ پنل برای کاربر {data['assign_uid']} ثبت شد.",
+        f"✅ پنل برای کاربر {data['assign_uid']} با ادمین «{uname}» ثبت شد.",
         reply_markup=admin_panel_keyboard(),
     )
 
