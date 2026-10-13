@@ -87,19 +87,13 @@ clone_or_copy_bot() {
         cp -r ./.env.example "$BOT_DIR/" 2>/dev/null || true
         cp -r ./* "$BOT_DIR/" 2>/dev/null || true
     else
-        # Clone from GitHub
+        # Clone from GitHub (public repo)
         echo -e "${BLUE}[*] Cloning from GitHub ($GITHUB_REPO)...${NC}"
-        echo -e "${YELLOW}If the repo is private, enter your GitHub token (otherwise press Enter):${NC}"
-        read -r GH_TOKEN
 
         TMP_CLONE="/tmp/pasaradminbot_clone_$$"
         rm -rf "$TMP_CLONE"
 
-        if [ -n "$GH_TOKEN" ]; then
-            git clone "https://${GH_TOKEN}@github.com/${GITHUB_REPO}.git" "$TMP_CLONE"
-        else
-            git clone "https://github.com/${GITHUB_REPO}.git" "$TMP_CLONE"
-        fi
+        git clone "https://github.com/${GITHUB_REPO}.git" "$TMP_CLONE"
 
         if [ ! -d "$TMP_CLONE/bot" ]; then
             echo -e "${RED}[ERROR] Clone failed or project structure is invalid.${NC}"
