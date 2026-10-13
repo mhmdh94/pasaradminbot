@@ -72,6 +72,7 @@ async def go_back(message: Message, state: FSMContext, admin_ctx: bool = False):
 
 @router.message(CommandStart())
 @router.message(Command("start"))
+@router.message(F.text.in_({"/start", "start", "/Start"}))
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     uid = message.from_user.id
@@ -229,7 +230,7 @@ async def buy_start(message: Message, state: FSMContext):
         await state.update_data(admin_context=True)
     if len(panels) == 1:
         await state.update_data(panel_id=panels[0]["id"])
-        await message.answer("📦 پلن را انتخاب کنید:", reply_markup=buy_select_plan(plans))
+        await message.answer("🛍 انتخاب محصول\nیکی از محصولات زیر را انتخاب کنید:", reply_markup=buy_select_plan(plans))
     else:
         await message.answer("🖥 پنل را انتخاب کنید:", reply_markup=buy_select_panel(panels))
 
@@ -257,7 +258,7 @@ async def cancel_buy(callback: CallbackQuery, state: FSMContext):
 async def buy_panel_cb(callback: CallbackQuery, state: FSMContext):
     await state.update_data(panel_id=int(callback.data.split("_")[2]))
     plans = await db.get_plans()
-    await callback.message.edit_text("📦 پلن را انتخاب کنید:", reply_markup=buy_select_plan(plans))
+    await callback.message.edit_text("🛍 انتخاب محصول\nیکی از محصولات زیر را انتخاب کنید:", reply_markup=buy_select_plan(plans))
     await callback.answer()
 
 

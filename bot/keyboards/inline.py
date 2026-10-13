@@ -53,11 +53,16 @@ def plans_list(plans: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in plans:
         st = "✅" if p["is_active"] else "❌"
-        per = round(p["price"] / p["volume_gb"]) if p["volume_gb"] else 0
-        b.row(InlineKeyboardButton(
-            text=f"{st} {p['volume_gb']}GB | {p['price']:,}ت | هرگیگ {per:,}",
-            callback_data=f"plan_{p['id']}"
-        ))
+        vol = p["volume_gb"]
+        if vol >= 1024 and vol % 1024 == 0:
+            vol_txt = f"{st} {vol // 1024} ترابایت"
+        else:
+            vol_txt = f"{st} {vol} گیگ"
+        price_txt = f"{p['price']:,} تومان"
+        b.row(
+            InlineKeyboardButton(text=vol_txt, callback_data=f"plan_{p['id']}"),
+            InlineKeyboardButton(text=price_txt, callback_data=f"plan_{p['id']}"),
+        )
     b.row(InlineKeyboardButton(text="➕ افزودن پلن", callback_data="add_plan"))
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
     return b.as_markup()
@@ -84,13 +89,20 @@ def buy_select_panel(panels: List[Dict]) -> InlineKeyboardMarkup:
 
 def buy_select_plan(plans: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    # header-like first row (non-selectable style via same callback ignore optional)
     for p in plans:
-        per = round(p["price"] / p["volume_gb"]) if p["volume_gb"] else 0
-        b.row(InlineKeyboardButton(
-            text=f"📦 {p['volume_gb']}GB — {p['price']:,}ت (هرگیگ {per:,})",
-            callback_data=f"buy_plan_{p['id']}"
-        ))
-    b.row(InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_buy"))
+        vol = p["volume_gb"]
+        if vol >= 1024 and vol % 1024 == 0:
+            vol_txt = f"{vol // 1024} ترابایت"
+        else:
+            vol_txt = f"{vol} گیگ"
+        price_txt = f"{p['price']:,} تومان"
+        # two columns like Mirza: product | price
+        b.row(
+            InlineKeyboardButton(text=vol_txt, callback_data=f"buy_plan_{p['id']}"),
+            InlineKeyboardButton(text=price_txt, callback_data=f"buy_plan_{p['id']}"),
+        )
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="cancel_buy"))
     return b.as_markup()
 
 
