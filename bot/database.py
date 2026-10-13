@@ -102,6 +102,24 @@ class Database:
                 sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, panel_id, admin_username, threshold)
             );
+
+            CREATE TABLE IF NOT EXISTS discount_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                percent INTEGER NOT NULL,
+                max_uses INTEGER DEFAULT 1,
+                used_count INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS discount_uses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                order_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         await self.conn.commit()
         # defaults
@@ -119,6 +137,7 @@ class Database:
             "report_channel": "",
             "volume_check_hours": "6",
             "volume_thresholds": "80,85,90,95,100",
+            "auto_approve_delay_minutes": "0",
         }
         for k, v in defaults.items():
             cur = await self.conn.execute("SELECT 1 FROM settings WHERE key=?", (k,))
@@ -393,6 +412,75 @@ class Database:
             (user_id, panel_id, admin_username, threshold),
         )
         await self.conn.commit()
+
+    # discounts
+    async def add_discount(self, code: str, percent: int, max_uses: int) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO discount_codes (code, percent, max_uses) VALUES (?,?,?)",
+            (code.upper().strip(), percent, max_uses),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def get_discounts(self):
+        async with self.conn.execute("SELECT * FROM discount_codes ORDER BY id DESC") as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_discount(self, disc_id: int):
+        async with self.conn.execute("SELECT * FROM discount_codes WHERE id=?", (disc_id,)) as c:
+            row = await c.fetchone()
+            return dict(row) if row else None
+
+    async def get_discount_by_code(self, code: str):
+        async with self.conn.execute(
+            "SELECT * FROM discount_codes WHERE code=? AND is_active=1",
+            (code.upper().strip(),),
+        ) as c:
+            row = await c.fetchone()
+            return dict(row) if row else None
+
+    async def update_discount(self, disc_id: int, **kwargs):
+        if not kwargs:
+            return
+        fields = ", ".join(f"{k}=?" for k in kwargs)
+        await self.conn.execute(
+            f"UPDATE discount_codes SET {fields} WHERE id=?",
+            (*kwargs.values(), disc_id),
+        )
+        await self.conn.commit()
+
+    async def delete_discount(self, disc_id: int):
+        await self.conn.execute("DELETE FROM discount_codes WHERE id=?", (disc_id,))
+        await self.conn.commit()
+
+    async def use_discount(self, code_id: int, user_id: int, order_id: int):
+        await self.conn.execute(
+            "UPDATE discount_codes SET used_count = used_count + 1 WHERE id=?",
+            (code_id,),
+        )
+        await self.conn.execute(
+            "INSERT INTO discount_uses (code_id, user_id, order_id) VALUES (?,?,?)",
+            (code_id, user_id, order_id),
+        )
+        await self.conn.commit()
+
+    async def payment_stats(self):
+        q = """
+        SELECT
+          COALESCE(SUM(CASE WHEN status='paid' AND date(created_at) >= date('now','weekday 0','-6 days') THEN price END),0) as this_week,
+          COALESCE(SUM(CASE WHEN status='paid' AND date(created_at) >= date('now','weekday 0','-13 days')
+                            AND date(created_at) < date('now','weekday 0','-6 days') THEN price END),0) as last_week,
+          COALESCE(SUM(CASE WHEN status='paid' AND date(created_at) >= date('now','start of month') THEN price END),0) as this_month,
+          COALESCE(SUM(CASE WHEN status='paid' AND date(created_at) >= date('now','start of month','-1 month')
+                            AND date(created_at) < date('now','start of month') THEN price END),0) as last_month,
+          COALESCE(SUM(CASE WHEN status='paid' THEN price END),0) as total_all,
+          COUNT(CASE WHEN status='paid' THEN 1 END) as paid_count,
+          COUNT(*) as all_orders
+        FROM orders
+        """
+        async with self.conn.execute(q) as c:
+            row = await c.fetchone()
+            return dict(row) if row else {}
 
 
 db = Database()

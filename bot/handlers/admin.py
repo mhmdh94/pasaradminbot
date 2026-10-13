@@ -13,8 +13,10 @@ from bot.keyboards.inline import (
     user_main_keyboard, admin_panel_keyboard, cancel_reply,
     panels_list, panel_actions, plans_list, plan_actions,
     buy_select_panel, buy_select_plan, confirm_order,
-    finance_keyboard, backup_settings_keyboard,
+    finance_keyboard, account_info_keyboard, discount_menu_keyboard,
+    discount_actions, payment_discount_kb, backup_settings_keyboard,
     bot_settings_keyboard, cron_settings_keyboard, user_search_kb,
+    start_notify_kb, user_panels_admin_kb,
 )
 from bot.services.pasarguard import get_panel_api
 
@@ -42,6 +44,11 @@ class Form(StatesGroup):
     set_volume_check_hours = State()
     set_volume_thresholds = State()
     assign_panel_username = State()
+    add_disc_code = State()
+    add_disc_percent = State()
+    add_disc_uses = State()
+    enter_discount = State()
+    set_auto_delay = State()
 
 
 def is_admin(uid: int) -> bool:
@@ -104,6 +111,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                     f"یوزرنیم: {uname}"
                 ),
                 parse_mode="HTML",
+                reply_markup=start_notify_kb(uid),
             )
             await report(
                 bot,
@@ -149,26 +157,20 @@ async def help_msg(message: Message):
 @router.message(F.text == "👤 مشخصات کاربری")
 async def user_profile(message: Message):
     uid = message.from_user.id
-    u = await db.get_bot_user(uid)
     stats = await db.user_stats(uid)
-    blocked = await db.is_blocked(uid)
     lines = [
         "👤 مشخصات کاربری\n",
         f"آیدی: <code>{uid}</code>",
         f"نام: {message.from_user.full_name or '-'}",
         f"یوزرنیم: @{message.from_user.username or '-'}",
-        f"وضعیت: {'🚫 بلاک' if blocked else '✅ فعال'}",
-        f"احراز هویت: {'✅' if (u and u.get('is_verified')) else '❌'}",
-        f"تأیید خودکار: {'✅' if (u and u.get('auto_approve')) else '❌'}",
         f"جمع واریزی: {stats.get('total_paid', 0):,} تومان",
         f"جمع حجم خریداری‌شده: {stats.get('total_volume', 0)} گیگ",
         f"تعداد سفارش موفق: {stats.get('paid_count', 0)}",
-        f"کل سفارش‌ها: {stats.get('order_count', 0)}",
     ]
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-@router.message(F.text == "🖥 پنل‌های من")
+@router.message(F.text == "🖥 پنل من")
 async def my_panels(message: Message):
     rows = await db.get_user_panels(message.from_user.id)
     if not rows:
@@ -190,12 +192,14 @@ async def my_panels(message: Message):
         used = admin_info.get("used_traffic") or 0
         limit_gb = round(limit / (1024**3), 2) if limit else 0
         used_gb = round(used / (1024**3), 2)
-        remain = max(limit_gb - used_gb, 0) if limit else "نامحدود"
+        remain = round(max(limit_gb - used_gb, 0), 2) if limit else "نامحدود"
         pct = round(used / limit * 100, 1) if limit else 0
+        status = admin_info.get("status") or "-"
         await message.answer(
             (
                 f"🖥 <b>{r['panel_name']}</b>\n"
-                f"👤 ادمین: <code>{r['admin_username']}</code>\n"
+                f"👤 ادمین پنل: <code>{r['admin_username']}</code>\n"
+                f"📌 وضعیت: {status}\n"
                 f"📊 حجم کل: {limit_gb} گیگ\n"
                 f"📉 مصرف: {used_gb} گیگ ({pct}%)\n"
                 f"✅ مانده: {remain} گیگ"
@@ -206,7 +210,7 @@ async def my_panels(message: Message):
 
 # ==================== BUY ====================
 
-@router.message(F.text.in_({"🛒 خرید حجم", "🛒 خرید حجم (ادمین)"}))
+@router.message(F.text == "🛒 خرید حجم")
 async def buy_start(message: Message, state: FSMContext):
     uid = message.from_user.id
     if await db.is_blocked(uid) and not is_admin(uid):
@@ -226,8 +230,6 @@ async def buy_start(message: Message, state: FSMContext):
     if not panels or not plans:
         await message.answer("⚠️ پنل یا پلن تعریف نشده.")
         return
-    if is_admin(uid) and message.text == "🛒 خرید حجم (ادمین)":
-        await state.update_data(admin_context=True)
     if len(panels) == 1:
         await state.update_data(panel_id=panels[0]["id"])
         await message.answer("🛍 انتخاب محصول\nیکی از محصولات زیر را انتخاب کنید:", reply_markup=buy_select_plan(plans))
@@ -333,24 +335,27 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
 
     await db.reset_attempts(uid)
 
-    limit = admin_info.get("data_limit") or 0
-    used = admin_info.get("used_traffic") or 0
-    limit_gb = round(limit / (1024**3), 2) if limit else 0
-    used_gb = round(used / (1024**3), 2)
-
     order_id = await db.create_order(
         uid, data["panel_id"], username, data["plan_id"], data["volume_gb"], data["price"]
     )
-    await state.update_data(order_id=order_id, username=username)
+    await state.update_data(order_id=order_id, username=username, price=data["price"], volume_gb=data["volume_gb"])
 
-    # auto approve?
-    u = await db.get_bot_user(uid)
-    auto = (u and u.get("auto_approve")) or (
-        await db.get_setting("auto_approve_default", "0") == "1"
-    )
-    if auto and is_admin(uid):
-        # still require payment flow for safety unless we skip - user wanted auto confirm of payment
-        pass
+    # check if any active discount codes exist
+    discs = [d for d in await db.get_discounts() if d["is_active"] and d["used_count"] < d["max_uses"]]
+    if discs:
+        await state.set_state(Form.enter_discount)
+        await message.answer(
+            (
+                f"✅ سفارش ثبت شد\n\n"
+                f"👤 ادمین پنل: <code>{username}</code>\n"
+                f"📦 حجم خرید: {data['volume_gb']} گیگ\n"
+                f"💰 مبلغ: <b>{data['price']:,} تومان</b>\n\n"
+                "کد تخفیف دارید؟"
+            ),
+            parse_mode="HTML",
+            reply_markup=payment_discount_kb(order_id),
+        )
+        return
 
     await state.set_state(Form.waiting_receipt)
     card = await db.get_setting("card_number", settings.CARD_NUMBER)
@@ -359,7 +364,6 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
     text = (
         "✅ سفارش ثبت شد\n\n"
         f"👤 ادمین پنل: <code>{username}</code>\n"
-        f"📊 حجم فعلی: {limit_gb} گیگ | مصرف: {used_gb} گیگ\n"
         f"📦 حجم خرید: {data['volume_gb']} گیگ\n"
         f"💰 مبلغ: <b>{data['price']:,} تومان</b>\n\n"
         f"💳 کارت:\n<code>{card}</code>\n"
@@ -368,6 +372,7 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
         text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
     text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
     await message.answer(text, parse_mode="HTML", reply_markup=cancel_reply())
+
 
 
 @router.message(Form.waiting_receipt, F.photo)
@@ -404,12 +409,13 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
         f"👤 تلگرام: <code>{message.from_user.id}</code>\n"
         f"👤 ادمین پنل: <code>{order['username']}</code>\n"
         f"🖥 {panel['name'] if panel else '-'}\n"
-        f"📦 {order['volume_gb']}GB | 💰 {order['price']:,} تومان"
+        f"📦 {order['volume_gb']} گیگ | 💰 {order['price']:,} تومان"
     )
     try:
         await bot.send_photo(
             settings.ADMIN_ID, photo=file_id, caption=caption,
-            parse_mode="HTML", reply_markup=confirm_order(order_id),
+            parse_mode="HTML",
+            reply_markup=confirm_order(order_id, message.from_user.id),
         )
     except Exception:
         pass
@@ -448,13 +454,13 @@ async def cb_admin_menu(callback: CallbackQuery, state: FSMContext):
 
 
 # --- panels ---
-@router.message(F.text == "🖥 مدیریت پنل‌ها")
+@router.message(F.text == "🖥 مدیریت پنل ربات")
 @router.callback_query(F.data == "manage_panels")
 async def manage_panels(event: Message | CallbackQuery):
     if not is_admin(event.from_user.id):
         return
     panels = await db.get_panels(active_only=False)
-    text = "🖥 مدیریت پنل‌ها:" + ("" if panels else "\nهیچ پنلی نیست.")
+    text = "🖥 مدیریت پنل ربات:" + ("" if panels else "\nهیچ پنلی نیست.")
     kb = panels_list(panels)
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(text, reply_markup=kb)
@@ -681,16 +687,16 @@ async def save_price(message: Message, state: FSMContext):
 async def finance(message: Message):
     if not is_admin(message.from_user.id):
         return
-    card = await db.get_setting("card_number", "-")
-    acc = await db.get_setting("account_number", "-")
-    owner = await db.get_setting("card_owner", "-")
-    auto = await db.get_setting("auto_approve_default", "0")
+    auto = await db.get_setting("auto_approve_default", "0") == "1"
+    try:
+        delay = int(await db.get_setting("auto_approve_delay_minutes", "0"))
+    except ValueError:
+        delay = 0
     await message.answer(
-        f"💰 مالی\nکارت: <code>{card}</code>\nحساب: <code>{acc}</code>\nصاحب: {owner}\n"
-        f"تأیید خودکار پیش‌فرض: {'✅' if auto=='1' else '❌'}",
-        parse_mode="HTML",
-        reply_markup=finance_keyboard(),
+        "💰 تنظیمات مالی",
+        reply_markup=finance_keyboard(auto_on=auto, auto_minutes=delay),
     )
+
 
 
 @router.callback_query(F.data == "set_card_number")
@@ -755,9 +761,16 @@ async def tog_auto_def(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
     cur = await db.get_setting("auto_approve_default", "0")
-    await db.set_setting("auto_approve_default", "0" if cur == "1" else "1")
-    await callback.answer("تغییر کرد")
-    await callback.message.answer(f"تأیید خودکار پیش‌فرض: {'✅' if cur!='1' else '❌'}")
+    new = "0" if cur == "1" else "1"
+    await db.set_setting("auto_approve_default", new)
+    try:
+        delay = int(await db.get_setting("auto_approve_delay_minutes", "0"))
+    except ValueError:
+        delay = 0
+    await callback.message.edit_reply_markup(
+        reply_markup=finance_keyboard(auto_on=(new == "1"), auto_minutes=delay)
+    )
+    await callback.answer("تأیید خودکار: " + ("روشن" if new == "1" else "خاموش"))
 
 
 # --- bot settings ---
@@ -766,7 +779,10 @@ async def bot_settings(message: Message):
     if not is_admin(message.from_user.id):
         return
     keys = ["bot_enabled", "allow_buy", "require_phone", "require_iran_phone", "require_verify"]
-    s = {k: await db.get_setting(k, "0") for k in keys}
+    s = {}
+    for k in keys:
+        default = "1" if k in ("bot_enabled", "allow_buy") else "0"
+        s[k] = await db.get_setting(k, default)
     ch = await db.get_setting("report_channel", "-")
     await message.answer(
         f"⚙️ تنظیمات ربات\nکانال گزارش: {ch}",
@@ -813,7 +829,7 @@ async def set_rep_s(message: Message, state: FSMContext):
 
 
 # --- cron ---
-@router.message(F.text == "⏰ تنظیمات کرون")
+@router.message(F.text == "⏰ تنظیمات کرون_DISABLED")
 async def cron_set(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -876,7 +892,7 @@ async def set_vt_s(message: Message, state: FSMContext):
 
 
 # --- backup ---
-@router.message(F.text == "🗄 تنظیمات بک‌آپ")
+@router.message(F.text == "🗄 تنظیمات بک‌آپ_DISABLED")
 async def backup_menu(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -986,13 +1002,16 @@ async def search_do(message: Message, state: FSMContext):
     blocked = await db.is_blocked(uid)
     verified = bool(u and u.get("is_verified"))
     auto_ap = bool(u and u.get("auto_approve"))
+    panels = await db.get_user_panels(uid)
+    panel_txt = "\n".join(f"• {r['panel_name']}: {r['admin_username']}" for r in panels) or "ندارد"
     text = (
         f"👤 کاربر <code>{uid}</code>\n"
         f"نام: {(u or {}).get('full_name') or '-'}\n"
         f"یوزرنیم: @{(u or {}).get('username') or '-'}\n"
         f"وضعیت: {'🚫 بلاک' if blocked else '✅'}\n"
         f"احراز: {'✅' if verified else '❌'} | تأیید خودکار: {'✅' if auto_ap else '❌'}\n"
-        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB | سفارش: {stats['paid_count']}"
+        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB | سفارش: {stats['paid_count']}\n"
+        f"🖥 پنل اختصاصی:\n{panel_txt}"
     )
     await state.clear()
     await message.answer(text, parse_mode="HTML", reply_markup=user_search_kb(uid, blocked, verified, auto_ap))
@@ -1189,7 +1208,7 @@ async def reject(callback: CallbackQuery, bot: Bot):
             pass
 
 
-@router.message(F.text == "ℹ️ وضعیت ربات")
+@router.message(F.text == "ℹ️ وضعیت ربات_DISABLED")
 async def status(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -1201,6 +1220,357 @@ async def status(message: Message):
         f"ادمین: <code>{settings.ADMIN_ID}</code>",
         parse_mode="HTML",
     )
+
+
+
+# ==================== NEW FEATURES ====================
+
+@router.message(F.text == "📊 آمار ربات")
+async def bot_stats(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    s = await db.payment_stats()
+    await message.answer(
+        (
+            "📊 آمار ربات\n\n"
+            f"🟢 این هفته: {s.get('this_week', 0):,} تومان\n"
+            f"⚪ هفته پیش: {s.get('last_week', 0):,} تومان\n"
+            f"🟢 این ماه: {s.get('this_month', 0):,} تومان\n"
+            f"⚪ ماه پیش: {s.get('last_month', 0):,} تومان\n"
+            f"💰 مجموع کل: {s.get('total_all', 0):,} تومان\n"
+            f"✅ سفارش موفق: {s.get('paid_count', 0)}\n"
+            f"📋 کل سفارش‌ها: {s.get('all_orders', 0)}"
+        )
+    )
+
+
+@router.callback_query(F.data == "finance_back")
+async def finance_back(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    auto = await db.get_setting("auto_approve_default", "0") == "1"
+    try:
+        delay = int(await db.get_setting("auto_approve_delay_minutes", "0"))
+    except ValueError:
+        delay = 0
+    await callback.message.edit_text(
+        "💰 تنظیمات مالی",
+        reply_markup=finance_keyboard(auto_on=auto, auto_minutes=delay),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "account_info")
+async def account_info(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    card = await db.get_setting("card_number", "-")
+    acc = await db.get_setting("account_number", "-")
+    owner = await db.get_setting("card_owner", "-")
+    await callback.message.edit_text(
+        f"💳 اطلاعات حساب\n\nکارت: <code>{card}</code>\nحساب: <code>{acc}</code>\nصاحب: {owner}",
+        parse_mode="HTML",
+        reply_markup=account_info_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "set_auto_approve_delay")
+async def set_auto_delay(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.set_state(Form.set_auto_delay)
+    await state.update_data(admin_context=True)
+    await callback.message.answer(
+        "تأخیر تأیید خودکار را به دقیقه وارد کنید (0 = فوری):",
+        reply_markup=cancel_reply(),
+    )
+    await callback.answer()
+
+
+@router.message(Form.set_auto_delay)
+async def set_auto_delay_s(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
+        return
+    try:
+        m = max(0, int(message.text.strip()))
+    except ValueError:
+        await message.answer("عدد معتبر")
+        return
+    await db.set_setting("auto_approve_delay_minutes", str(m))
+    await state.clear()
+    await message.answer(f"✅ تأخیر: {m} دقیقه", reply_markup=admin_panel_keyboard())
+
+
+@router.callback_query(F.data == "discount_menu")
+async def disc_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    codes = await db.get_discounts()
+    await callback.message.edit_text(
+        "🏷 مدیریت کد تخفیف",
+        reply_markup=discount_menu_keyboard(codes),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "add_discount")
+async def add_disc(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.set_state(Form.add_disc_code)
+    await state.update_data(admin_context=True)
+    await callback.message.answer("کد تخفیف را وارد کنید (مثلاً OFF20):", reply_markup=cancel_reply())
+    await callback.answer()
+
+
+@router.message(Form.add_disc_code)
+async def add_disc_code(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
+        return
+    await state.update_data(code=message.text.strip().upper())
+    await state.set_state(Form.add_disc_percent)
+    await message.answer("درصد تخفیف (مثلاً 10):")
+
+
+@router.message(Form.add_disc_percent)
+async def add_disc_pct(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
+        return
+    try:
+        pct = int(message.text.strip())
+        if not 1 <= pct <= 100:
+            raise ValueError
+    except ValueError:
+        await message.answer("عدد ۱ تا ۱۰۰")
+        return
+    await state.update_data(percent=pct)
+    await state.set_state(Form.add_disc_uses)
+    await message.answer("حداکثر تعداد استفاده (مثلاً 50):")
+
+
+@router.message(Form.add_disc_uses)
+async def add_disc_uses(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
+        return
+    try:
+        uses = max(1, int(message.text.strip()))
+    except ValueError:
+        await message.answer("عدد")
+        return
+    data = await state.get_data()
+    try:
+        await db.add_discount(data["code"], data["percent"], uses)
+        await message.answer(
+            f"✅ کد {data['code']} | {data['percent']}% | {uses} بار",
+            reply_markup=admin_panel_keyboard(),
+        )
+    except Exception as e:
+        await message.answer(f"❌ خطا (شاید کد تکراری): {e}", reply_markup=admin_panel_keyboard())
+    await state.clear()
+
+
+@router.callback_query(F.data.regexp(r"^disc_\d+$"))
+async def disc_detail(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    d = await db.get_discount(int(callback.data.split("_")[1]))
+    if not d:
+        await callback.answer("نیست", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"🏷 {d['code']}\nدرصد: {d['percent']}%\nاستفاده: {d['used_count']}/{d['max_uses']}\n"
+        f"وضعیت: {'فعال' if d['is_active'] else 'غیرفعال'}",
+        reply_markup=discount_actions(d["id"]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("disc_tog_"))
+async def disc_tog(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    did = int(callback.data.split("_")[2])
+    d = await db.get_discount(did)
+    await db.update_discount(did, is_active=0 if d["is_active"] else 1)
+    codes = await db.get_discounts()
+    await callback.message.edit_text("🏷 مدیریت کد تخفیف", reply_markup=discount_menu_keyboard(codes))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("disc_del_"))
+async def disc_del(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await db.delete_discount(int(callback.data.split("_")[2]))
+    codes = await db.get_discounts()
+    await callback.message.edit_text("🏷 مدیریت کد تخفیف", reply_markup=discount_menu_keyboard(codes))
+    await callback.answer("حذف شد")
+
+
+@router.callback_query(F.data.startswith("use_disc_"))
+async def use_disc(callback: CallbackQuery, state: FSMContext):
+    oid = int(callback.data.split("_")[2])
+    await state.update_data(order_id=oid)
+    await state.set_state(Form.enter_discount)
+    await callback.message.answer("کد تخفیف را وارد کنید:", reply_markup=cancel_reply())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("skip_disc_"))
+async def skip_disc(callback: CallbackQuery, state: FSMContext):
+    oid = int(callback.data.split("_")[2])
+    order = await db.get_order(oid)
+    if not order:
+        await callback.answer("سفارش نیست", show_alert=True)
+        return
+    await state.update_data(order_id=oid, username=order["username"], price=order["price"])
+    await state.set_state(Form.waiting_receipt)
+    card = await db.get_setting("card_number", settings.CARD_NUMBER)
+    account = await db.get_setting("account_number", "")
+    owner = await db.get_setting("card_owner", settings.CARD_OWNER)
+    text = (
+        f"👤 ادمین پنل: <code>{order['username']}</code>\n"
+        f"📦 حجم: {order['volume_gb']} گیگ\n"
+        f"💰 مبلغ: <b>{order['price']:,} تومان</b>\n\n"
+        f"💳 کارت:\n<code>{card}</code>\n"
+    )
+    if account:
+        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
+    text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
+    await callback.message.edit_text(text, parse_mode="HTML")
+    await callback.message.answer("عکس رسید:", reply_markup=cancel_reply())
+    await callback.answer()
+
+
+@router.message(Form.enter_discount)
+async def enter_disc(message: Message, state: FSMContext):
+    if message.text == "❌ انصراف":
+        return
+    data = await state.get_data()
+    oid = data.get("order_id")
+    order = await db.get_order(oid) if oid else None
+    if not order:
+        await state.clear()
+        await message.answer("سفارش نامعتبر")
+        return
+    code = message.text.strip()
+    disc = await db.get_discount_by_code(code)
+    if not disc or disc["used_count"] >= disc["max_uses"]:
+        await message.answer("❌ کد نامعتبر یا تمام شده. دوباره وارد کنید یا انصراف بزنید.")
+        return
+    new_price = int(order["price"] * (100 - disc["percent"]) / 100)
+    await db.update_order(oid, price=new_price)
+    await db.use_discount(disc["id"], message.from_user.id, oid)
+    await state.update_data(price=new_price)
+    await state.set_state(Form.waiting_receipt)
+    card = await db.get_setting("card_number", settings.CARD_NUMBER)
+    account = await db.get_setting("account_number", "")
+    owner = await db.get_setting("card_owner", settings.CARD_OWNER)
+    text = (
+        f"✅ تخفیف {disc['percent']}% اعمال شد\n\n"
+        f"👤 ادمین پنل: <code>{order['username']}</code>\n"
+        f"📦 حجم: {order['volume_gb']} گیگ\n"
+        f"💰 مبلغ قبلی: {order['price']:,}\n"
+        f"💰 مبلغ نهایی: <b>{new_price:,} تومان</b>\n\n"
+        f"💳 کارت:\n<code>{card}</code>\n"
+    )
+    if account:
+        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
+    text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
+    await message.answer(text, parse_mode="HTML", reply_markup=cancel_reply())
+
+
+@router.callback_query(F.data == "bot_settings_back")
+@router.callback_query(F.data == "cron_from_settings")
+@router.callback_query(F.data == "backup_from_settings")
+async def settings_sub(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    if callback.data == "bot_settings_back":
+        keys = ["bot_enabled", "allow_buy", "require_phone", "require_iran_phone", "require_verify"]
+        s = {k: await db.get_setting(k, "0" if k != "bot_enabled" and k != "allow_buy" else "1") for k in keys}
+        ch = await db.get_setting("report_channel", "-")
+        await callback.message.edit_text(f"⚙️ تنظیمات ربات\nکانال گزارش: {ch}", reply_markup=bot_settings_keyboard(s))
+    elif callback.data == "cron_from_settings":
+        h = await db.get_setting("volume_check_hours", "6")
+        th = await db.get_setting("volume_thresholds", "80,85,90,95,100")
+        await callback.message.edit_text(
+            f"⏰ کرون\nفاصله چک: هر {h} ساعت\nآستانه‌ها: {th}%",
+            reply_markup=cron_settings_keyboard(),
+        )
+    else:
+        h = await db.get_setting("backup_interval_hours", "24")
+        await callback.message.edit_text(f"🗄 بک‌آپ — هر {h} ساعت", reply_markup=backup_settings_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("uinfo_"))
+async def uinfo(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    uid = int(callback.data.split("_")[1])
+    u = await db.get_bot_user(uid)
+    stats = await db.user_stats(uid)
+    blocked = await db.is_blocked(uid)
+    verified = bool(u and u.get("is_verified"))
+    auto_ap = bool(u and u.get("auto_approve"))
+    panels = await db.get_user_panels(uid)
+    panel_txt = "\n".join(
+        f"• {r['panel_name']}: {r['admin_username']}" for r in panels
+    ) or "ندارد"
+    text = (
+        f"👤 کاربر <code>{uid}</code>\n"
+        f"نام: {(u or {}).get('full_name') or '-'}\n"
+        f"یوزرنیم: @{(u or {}).get('username') or '-'}\n"
+        f"وضعیت: {'🚫 بلاک' if blocked else '✅'}\n"
+        f"احراز: {'✅' if verified else '❌'} | تأیید خودکار: {'✅' if auto_ap else '❌'}\n"
+        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB\n"
+        f"🖥 پنل اختصاصی:\n{panel_txt}"
+    )
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=user_search_kb(uid, blocked, verified, auto_ap))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("viewup_"))
+async def viewup(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    uid = int(callback.data.split("_")[1])
+    rows = await db.get_user_panels(uid)
+    if not rows:
+        await callback.answer("پنلی اختصاص داده نشده", show_alert=True)
+        return
+    lines = [f"🖥 پنل‌های کاربر {uid}:"]
+    for r in rows:
+        lines.append(f"• {r['panel_name']} — ادمین: {r['admin_username']}")
+    await callback.message.answer("\n".join(lines), reply_markup=user_panels_admin_kb(uid, rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rmup_"))
+async def rmup(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    # rmup_{uid}_{panel_id}_{username}  username may contain underscores - take last parts carefully
+    parts = callback.data.split("_", 3)
+    # rmup, uid, panel_id, admin_username
+    uid = int(parts[1])
+    panel_id = int(parts[2])
+    admin_username = parts[3]
+    await db.remove_user_panel(uid, panel_id, admin_username)
+    await callback.answer("حذف شد")
+    rows = await db.get_user_panels(uid)
+    if rows:
+        await callback.message.edit_text(
+            f"🖥 پنل‌های کاربر {uid}:\n" + "\n".join(
+                f"• {r['panel_name']} — {r['admin_username']}" for r in rows
+            ),
+            reply_markup=user_panels_admin_kb(uid, rows),
+        )
+    else:
+        await callback.message.edit_text("همه پنل‌ها حذف شدند.")
+
 
 
 @router.message(Command("cancel"))
