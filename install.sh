@@ -280,9 +280,10 @@ show_menu() {
     echo -e "${CYAN}2)${NC} Update bot"
     echo -e "${CYAN}3)${NC} Remove bot"
     echo -e "${CYAN}4)${NC} Service status"
-    echo -e "${CYAN}5)${NC} Exit"
+    echo -e "${CYAN}5)${NC} Restart service"
+    echo -e "${CYAN}6)${NC} Exit"
     echo ""
-    read -p "Select an option [1-5]: " option
+    read -p "Select an option [1-6]: " option
 
     case $option in
         1)
@@ -307,6 +308,11 @@ show_menu() {
             systemctl status $SERVICE_NAME --no-pager || echo "Service is not installed"
             ;;
         5)
+            systemctl restart $SERVICE_NAME
+            sleep 1
+            systemctl status $SERVICE_NAME --no-pager || true
+            ;;
+        6)
             exit 0
             ;;
         *)

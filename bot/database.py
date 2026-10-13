@@ -1,29 +1,25 @@
 import aiosqlite
-import json
+import os
 from typing import Optional, List, Dict, Any
 from bot.config import settings
 
 
 class Database:
-    def __init__(self, db_path: str = settings.DB_PATH):
-        self.db_path = db_path
+    def __init__(self):
+        self.conn: Optional[aiosqlite.Connection] = None
 
     async def connect(self):
-        self.conn = await aiosqlite.connect(self.db_path)
+        os.makedirs(os.path.dirname(settings.DB_PATH), exist_ok=True)
+        self.conn = await aiosqlite.connect(settings.DB_PATH)
         self.conn.row_factory = aiosqlite.Row
         await self.create_tables()
 
     async def close(self):
-        if hasattr(self, "conn"):
+        if self.conn:
             await self.conn.close()
 
     async def create_tables(self):
         await self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
-
             CREATE TABLE IF NOT EXISTS panels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -51,22 +47,39 @@ class Database:
                 user_id INTEGER NOT NULL,
                 panel_id INTEGER NOT NULL,
                 username TEXT NOT NULL,
-                plan_id INTEGER NOT NULL,
+                plan_id INTEGER,
                 volume_gb INTEGER NOT NULL,
                 price INTEGER NOT NULL,
-                status TEXT DEFAULT 'pending',  -- pending, waiting_receipt, paid, rejected, cancelled
+                status TEXT DEFAULT 'waiting_receipt',
                 receipt_file_id TEXT,
-                admin_note TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (panel_id) REFERENCES panels(id),
-                FOREIGN KEY (plan_id) REFERENCES volume_plans(id)
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS users_state (
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS bot_users (
                 user_id INTEGER PRIMARY KEY,
-                state TEXT,
-                data TEXT
+                username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                is_verified INTEGER DEFAULT 0,
+                auto_approve INTEGER DEFAULT 0,
+                total_paid INTEGER DEFAULT 0,
+                total_volume_gb INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_start TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS user_panels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                panel_id INTEGER NOT NULL,
+                admin_username TEXT NOT NULL,
+                UNIQUE(user_id, panel_id, admin_username)
             );
 
             CREATE TABLE IF NOT EXISTS blocked_users (
@@ -80,221 +93,306 @@ class Database:
                 user_id INTEGER PRIMARY KEY,
                 attempts INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS volume_alerts_sent (
+                user_id INTEGER NOT NULL,
+                panel_id INTEGER NOT NULL,
+                admin_username TEXT NOT NULL,
+                threshold INTEGER NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, panel_id, admin_username, threshold)
+            );
         """)
         await self.conn.commit()
-
-        # Default settings
-        await self.set_setting("card_number", settings.CARD_NUMBER)
-        await self.set_setting("card_owner", settings.CARD_OWNER)
-
-    # ---------- Settings ----------
-    async def set_setting(self, key: str, value: str):
-        await self.conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            (key, value)
-        )
+        # defaults
+        defaults = {
+            "card_number": "6037-XXXX-XXXX-XXXX",
+            "account_number": "",
+            "card_owner": "نام صاحب کارت",
+            "backup_interval_hours": "24",
+            "bot_enabled": "1",
+            "require_phone": "0",
+            "require_iran_phone": "0",
+            "require_verify": "0",
+            "allow_buy": "1",
+            "auto_approve_default": "0",
+            "report_channel": "",
+            "volume_check_hours": "6",
+            "volume_thresholds": "80,85,90,95,100",
+        }
+        for k, v in defaults.items():
+            cur = await self.conn.execute("SELECT 1 FROM settings WHERE key=?", (k,))
+            if not await cur.fetchone():
+                await self.conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?)", (k, v)
+                )
         await self.conn.commit()
 
+    # settings
     async def get_setting(self, key: str, default: str = "") -> str:
         async with self.conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        ) as c:
+            row = await c.fetchone()
             return row["value"] if row else default
 
-    # ---------- Panels ----------
-    async def add_panel(self, name: str, url: str, username: str, password: str) -> int:
-        cursor = await self.conn.execute(
-            "INSERT INTO panels (name, url, username, password) VALUES (?, ?, ?, ?)",
-            (name, url.rstrip("/"), username, password)
+    async def set_setting(self, key: str, value: str):
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
         )
         await self.conn.commit()
-        return cursor.lastrowid
 
-    async def get_panels(self, active_only: bool = True) -> List[Dict]:
-        query = "SELECT * FROM panels"
+    # panels
+    async def add_panel(self, name, url, username, password) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO panels (name, url, username, password) VALUES (?, ?, ?, ?)",
+            (name, url, username, password),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def get_panels(self, active_only=True) -> List[Dict]:
+        q = "SELECT * FROM panels"
         if active_only:
-            query += " WHERE is_active = 1"
-        query += " ORDER BY id"
-        async with self.conn.execute(query) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            q += " WHERE is_active = 1"
+        q += " ORDER BY id"
+        async with self.conn.execute(q) as c:
+            return [dict(r) for r in await c.fetchall()]
 
     async def get_panel(self, panel_id: int) -> Optional[Dict]:
         async with self.conn.execute(
             "SELECT * FROM panels WHERE id = ?", (panel_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        ) as c:
+            row = await c.fetchone()
             return dict(row) if row else None
-
-    async def update_panel_token(self, panel_id: int, token: str, token_time: int):
-        await self.conn.execute(
-            "UPDATE panels SET token = ?, token_time = ? WHERE id = ?",
-            (token, token_time, panel_id)
-        )
-        await self.conn.commit()
 
     async def delete_panel(self, panel_id: int):
         await self.conn.execute("DELETE FROM panels WHERE id = ?", (panel_id,))
         await self.conn.commit()
 
-    # ---------- Volume Plans ----------
-    async def add_plan(self, title: str, volume_gb: int, price: int, sort_order: int = 0) -> int:
-        cursor = await self.conn.execute(
-            "INSERT INTO volume_plans (title, volume_gb, price, sort_order) VALUES (?, ?, ?, ?)",
-            (title, volume_gb, price, sort_order)
+    async def update_panel_token(self, panel_id: int, token: str, token_time: int):
+        await self.conn.execute(
+            "UPDATE panels SET token=?, token_time=? WHERE id=?",
+            (token, token_time, panel_id),
         )
         await self.conn.commit()
-        return cursor.lastrowid
 
-    async def get_plans(self, active_only: bool = True) -> List[Dict]:
-        query = "SELECT * FROM volume_plans"
+    # plans
+    async def add_plan(self, title, volume_gb, price) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO volume_plans (title, volume_gb, price) VALUES (?, ?, ?)",
+            (title, volume_gb, price),
+        )
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def get_plans(self, active_only=True) -> List[Dict]:
+        q = "SELECT * FROM volume_plans"
         if active_only:
-            query += " WHERE is_active = 1"
-        query += " ORDER BY volume_gb ASC"
-        async with self.conn.execute(query) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            q += " WHERE is_active = 1"
+        q += " ORDER BY volume_gb ASC"
+        async with self.conn.execute(q) as c:
+            return [dict(r) for r in await c.fetchall()]
 
     async def get_plan(self, plan_id: int) -> Optional[Dict]:
         async with self.conn.execute(
             "SELECT * FROM volume_plans WHERE id = ?", (plan_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        ) as c:
+            row = await c.fetchone()
             return dict(row) if row else None
 
     async def update_plan(self, plan_id: int, **kwargs):
-        fields = []
-        values = []
-        for k, v in kwargs.items():
-            fields.append(f"{k} = ?")
-            values.append(v)
-        values.append(plan_id)
+        if not kwargs:
+            return
+        fields = ", ".join(f"{k}=?" for k in kwargs)
         await self.conn.execute(
-            f"UPDATE volume_plans SET {', '.join(fields)} WHERE id = ?",
-            values
+            f"UPDATE volume_plans SET {fields} WHERE id=?",
+            (*kwargs.values(), plan_id),
         )
         await self.conn.commit()
 
     async def delete_plan(self, plan_id: int):
-        await self.conn.execute("DELETE FROM volume_plans WHERE id = ?", (plan_id,))
+        await self.conn.execute("DELETE FROM volume_plans WHERE id=?", (plan_id,))
         await self.conn.commit()
 
-    # ---------- Orders ----------
-    async def create_order(
-        self, user_id: int, panel_id: int, username: str,
-        plan_id: int, volume_gb: int, price: int
-    ) -> int:
-        cursor = await self.conn.execute(
-            """INSERT INTO orders 
-               (user_id, panel_id, username, plan_id, volume_gb, price, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'waiting_receipt')""",
-            (user_id, panel_id, username, plan_id, volume_gb, price)
+    # orders
+    async def create_order(self, user_id, panel_id, username, plan_id, volume_gb, price) -> int:
+        cur = await self.conn.execute(
+            """INSERT INTO orders (user_id, panel_id, username, plan_id, volume_gb, price)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, panel_id, username, plan_id, volume_gb, price),
         )
         await self.conn.commit()
-        return cursor.lastrowid
+        return cur.lastrowid
 
     async def get_order(self, order_id: int) -> Optional[Dict]:
         async with self.conn.execute(
-            "SELECT * FROM orders WHERE id = ?", (order_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+            "SELECT * FROM orders WHERE id=?", (order_id,)
+        ) as c:
+            row = await c.fetchone()
             return dict(row) if row else None
 
     async def update_order(self, order_id: int, **kwargs):
-        fields = ["updated_at = CURRENT_TIMESTAMP"]
-        values = []
-        for k, v in kwargs.items():
-            fields.append(f"{k} = ?")
-            values.append(v)
-        values.append(order_id)
+        if not kwargs:
+            return
+        fields = ", ".join(f"{k}=?" for k in kwargs)
         await self.conn.execute(
-            f"UPDATE orders SET {', '.join(fields)} WHERE id = ?",
-            values
+            f"UPDATE orders SET {fields}, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (*kwargs.values(), order_id),
         )
         await self.conn.commit()
 
     async def get_pending_orders(self) -> List[Dict]:
         async with self.conn.execute(
-            "SELECT * FROM orders WHERE status IN ('waiting_receipt', 'pending') ORDER BY created_at DESC"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            "SELECT * FROM orders WHERE status IN ('waiting_receipt','pending') ORDER BY created_at DESC"
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
 
-    async def get_user_orders(self, user_id: int, limit: int = 10) -> List[Dict]:
+    async def get_user_orders(self, user_id: int, limit=20) -> List[Dict]:
         async with self.conn.execute(
-            "SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            "SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
 
-    # ---------- User State (FSM simple) ----------
-    async def set_state(self, user_id: int, state: str, data: dict = None):
-        data_json = json.dumps(data or {}, ensure_ascii=False)
+    async def user_stats(self, user_id: int) -> Dict:
+        async with self.conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN status='paid' THEN price ELSE 0 END),0) as total_paid,
+                      COALESCE(SUM(CASE WHEN status='paid' THEN volume_gb ELSE 0 END),0) as total_volume,
+                      COUNT(*) as order_count,
+                      SUM(CASE WHEN status='paid' THEN 1 ELSE 0 END) as paid_count
+               FROM orders WHERE user_id=?""",
+            (user_id,),
+        ) as c:
+            row = await c.fetchone()
+            return dict(row) if row else {"total_paid": 0, "total_volume": 0, "order_count": 0, "paid_count": 0}
+
+    # bot users
+    async def upsert_bot_user(self, user_id, username=None, full_name=None):
         await self.conn.execute(
-            "INSERT OR REPLACE INTO users_state (user_id, state, data) VALUES (?, ?, ?)",
-            (user_id, state, data_json)
+            """INSERT INTO bot_users (user_id, username, full_name, last_start)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 username=COALESCE(excluded.username, bot_users.username),
+                 full_name=COALESCE(excluded.full_name, bot_users.full_name),
+                 last_start=CURRENT_TIMESTAMP""",
+            (user_id, username, full_name),
         )
         await self.conn.commit()
 
-    async def get_state(self, user_id: int) -> tuple[Optional[str], dict]:
+    async def get_bot_user(self, user_id: int) -> Optional[Dict]:
         async with self.conn.execute(
-            "SELECT state, data FROM users_state WHERE user_id = ?", (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return row["state"], json.loads(row["data"] or "{}")
-            return None, {}
+            "SELECT * FROM bot_users WHERE user_id=?", (user_id,)
+        ) as c:
+            row = await c.fetchone()
+            return dict(row) if row else None
 
-    async def clear_state(self, user_id: int):
-        await self.conn.execute("DELETE FROM users_state WHERE user_id = ?", (user_id,))
+    async def update_bot_user(self, user_id: int, **kwargs):
+        if not kwargs:
+            return
+        fields = ", ".join(f"{k}=?" for k in kwargs)
+        await self.conn.execute(
+            f"UPDATE bot_users SET {fields} WHERE user_id=?",
+            (*kwargs.values(), user_id),
+        )
         await self.conn.commit()
 
-    # ---------- Block / attempts ----------
+    # user panels assignment
+    async def assign_user_panel(self, user_id, panel_id, admin_username):
+        await self.conn.execute(
+            """INSERT OR IGNORE INTO user_panels (user_id, panel_id, admin_username)
+               VALUES (?, ?, ?)""",
+            (user_id, panel_id, admin_username),
+        )
+        await self.conn.commit()
+
+    async def remove_user_panel(self, user_id, panel_id, admin_username):
+        await self.conn.execute(
+            "DELETE FROM user_panels WHERE user_id=? AND panel_id=? AND admin_username=?",
+            (user_id, panel_id, admin_username),
+        )
+        await self.conn.commit()
+
+    async def get_user_panels(self, user_id: int) -> List[Dict]:
+        async with self.conn.execute(
+            """SELECT up.*, p.name as panel_name, p.url as panel_url
+               FROM user_panels up JOIN panels p ON p.id = up.panel_id
+               WHERE up.user_id=?""",
+            (user_id,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_all_user_panels(self) -> List[Dict]:
+        async with self.conn.execute(
+            """SELECT up.*, p.name as panel_name FROM user_panels up
+               JOIN panels p ON p.id = up.panel_id"""
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    # block / attempts
     async def is_blocked(self, user_id: int) -> bool:
         async with self.conn.execute(
-            "SELECT 1 FROM blocked_users WHERE user_id = ?", (user_id,)
+            "SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)
         ) as c:
             return await c.fetchone() is not None
 
     async def block_user(self, user_id: int, reason: str = ""):
         await self.conn.execute(
-            "INSERT OR REPLACE INTO blocked_users (user_id, reason, failed_attempts) VALUES (?, ?, ?)",
-            (user_id, reason, 10)
+            "INSERT OR REPLACE INTO blocked_users (user_id, reason, failed_attempts) VALUES (?,?,10)",
+            (user_id, reason),
         )
         await self.conn.commit()
 
     async def unblock_user(self, user_id: int):
-        await self.conn.execute("DELETE FROM blocked_users WHERE user_id = ?", (user_id,))
-        await self.conn.execute("DELETE FROM username_attempts WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+        await self.conn.execute("DELETE FROM username_attempts WHERE user_id=?", (user_id,))
         await self.conn.commit()
 
     async def get_blocked_users(self):
-        async with self.conn.execute("SELECT * FROM blocked_users ORDER BY blocked_at DESC") as c:
+        async with self.conn.execute(
+            "SELECT * FROM blocked_users ORDER BY blocked_at DESC"
+        ) as c:
             return [dict(r) for r in await c.fetchall()]
 
     async def get_attempts(self, user_id: int) -> int:
         async with self.conn.execute(
-            "SELECT attempts FROM username_attempts WHERE user_id = ?", (user_id,)
+            "SELECT attempts FROM username_attempts WHERE user_id=?", (user_id,)
         ) as c:
             row = await c.fetchone()
             return int(row["attempts"]) if row else 0
 
     async def inc_attempts(self, user_id: int) -> int:
-        current = await self.get_attempts(user_id)
-        new_val = current + 1
+        cur = await self.get_attempts(user_id)
+        new = cur + 1
         await self.conn.execute(
-            "INSERT OR REPLACE INTO username_attempts (user_id, attempts) VALUES (?, ?)",
-            (user_id, new_val)
+            "INSERT OR REPLACE INTO username_attempts (user_id, attempts) VALUES (?,?)",
+            (user_id, new),
         )
         await self.conn.commit()
-        return new_val
+        return new
 
     async def reset_attempts(self, user_id: int):
-        await self.conn.execute("DELETE FROM username_attempts WHERE user_id = ?", (user_id,))
+        await self.conn.execute(
+            "DELETE FROM username_attempts WHERE user_id=?", (user_id,)
+        )
         await self.conn.commit()
 
+    # volume alerts
+    async def was_alert_sent(self, user_id, panel_id, admin_username, threshold) -> bool:
+        async with self.conn.execute(
+            """SELECT 1 FROM volume_alerts_sent
+               WHERE user_id=? AND panel_id=? AND admin_username=? AND threshold=?""",
+            (user_id, panel_id, admin_username, threshold),
+        ) as c:
+            return await c.fetchone() is not None
+
+    async def mark_alert_sent(self, user_id, panel_id, admin_username, threshold):
+        await self.conn.execute(
+            """INSERT OR IGNORE INTO volume_alerts_sent
+               (user_id, panel_id, admin_username, threshold) VALUES (?,?,?,?)""",
+            (user_id, panel_id, admin_username, threshold),
+        )
+        await self.conn.commit()
 
 
 db = Database()
