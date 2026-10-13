@@ -139,7 +139,7 @@ class Database:
         query = "SELECT * FROM volume_plans"
         if active_only:
             query += " WHERE is_active = 1"
-        query += " ORDER BY sort_order, volume_gb"
+        query += " ORDER BY volume_gb ASC"
         async with self.conn.execute(query) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]

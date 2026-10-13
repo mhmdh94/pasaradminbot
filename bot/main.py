@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 async def send_backup(bot: Bot):
-    """Scheduled backup of database to admin"""
     try:
         db_path = settings.DB_PATH
         if not os.path.exists(db_path):
@@ -31,14 +30,13 @@ async def send_backup(bot: Bot):
         backup_name = f"auto_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
         backup_path = os.path.join(settings.BASE_DIR, "data", backup_name)
         shutil.copy2(db_path, backup_path)
-
         await bot.send_document(
             chat_id=settings.ADMIN_ID,
             document=FSInputFile(backup_path),
-            caption=f"🗄 بک‌آپ خودکار دیتابیس\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            caption=f"🗄 بک‌آپ خودکار\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         os.remove(backup_path)
-        logger.info("Auto backup sent successfully")
+        logger.info("Auto backup sent")
     except Exception as e:
         logger.error(f"Backup failed: {e}")
 
@@ -46,18 +44,15 @@ async def send_backup(bot: Bot):
 async def on_startup(bot: Bot):
     await db.connect()
     logger.info("Database connected")
-
-    # Ensure data dir exists
     os.makedirs(os.path.dirname(settings.DB_PATH), exist_ok=True)
-
+    # default backup interval if not set
+    existing = await db.get_setting("backup_interval_hours", "")
+    if not existing:
+        await db.set_setting("backup_interval_hours", "24")
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
-
     try:
-        await bot.send_message(
-            settings.ADMIN_ID,
-            f"✅ ربات راه‌اندازی شد.\n\n@{me.username}"
-        )
+        await bot.send_message(settings.ADMIN_ID, f"✅ ربات راه‌اندازی شد.\n@{me.username}")
     except Exception:
         pass
 
@@ -74,23 +69,25 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin_router)
-
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Scheduler for auto backup
     scheduler = AsyncIOScheduler(timezone="Asia/Tehran")
-    scheduler.add_job(
-        send_backup,
-        "cron",
-        hour=settings.BACKUP_HOUR,
-        minute=settings.BACKUP_MINUTE,
-        args=[bot]
-    )
-    scheduler.start()
-    logger.info(f"Auto backup scheduled at {settings.BACKUP_HOUR:02d}:{settings.BACKUP_MINUTE:02d}")
 
-    # Polling (simple & reliable). For webhook you can extend later.
+    # Read interval from DB after connect - use job that re-reads, or fixed hours from env then DB
+    # Simple approach: interval hours from setting, default 24
+    await db.connect()
+    hours_str = await db.get_setting("backup_interval_hours", "24")
+    try:
+        hours = max(1, int(hours_str))
+    except ValueError:
+        hours = 24
+    await db.close()
+
+    scheduler.add_job(send_backup, "interval", hours=hours, args=[bot], id="auto_backup")
+    scheduler.start()
+    logger.info(f"Auto backup every {hours} hour(s)")
+
     try:
         await dp.start_polling(bot)
     finally:
