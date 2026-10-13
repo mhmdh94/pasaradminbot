@@ -228,7 +228,10 @@ async def process_buy_username(message: Message, state: FSMContext, bot: Bot):
     api = await get_panel_api(data["panel_id"])
     if not api:
         await state.clear()
-        await message.answer("❌ خطا در اتصال به پنل.", reply_markup=user_main_keyboard(is_admin=is_admin(message.from_user.id)))
+        await message.answer(
+            "❌ خطا در اتصال به پنل.",
+            reply_markup=user_main_keyboard(is_admin=is_admin(message.from_user.id)),
+        )
         return
 
     # Check panel ADMIN (not regular user)
@@ -241,25 +244,26 @@ async def process_buy_username(message: Message, state: FSMContext, bot: Bot):
             await state.clear()
             await message.answer("🚫 به دلیل ۱۰ بار یوزرنیم اشتباه، بلاک شدید.")
             try:
+                uname = message.from_user.username or "-"
                 await bot.send_message(
                     settings.ADMIN_ID,
-                    f"🚫 کاربر بلاک شد
-"
-                    f"آیدی: <code>{message.from_user.id}</code>
-"
-                    f"یوزرنیم تلگرام: @{message.from_user.username or '-'}
-"
-                    f"دلیل: ۱۰ بار یوزرنیم ادمین اشتباه",
-                    parse_mode="HTML"
+                    (
+                        "🚫 کاربر بلاک شد\n"
+                        f"آیدی: <code>{message.from_user.id}</code>\n"
+                        f"یوزرنیم تلگرام: @{uname}\n"
+                        "دلیل: ۱۰ بار یوزرنیم ادمین اشتباه"
+                    ),
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
             return
         await message.answer(
-            f"❌ ادمینی با نام «{username}» در پنل وجود ندارد.
-"
-            f"تلاش باقی‌مانده: {left} از ۱۰",
-            reply_markup=cancel_reply()
+            (
+                f"❌ ادمینی با نام «{username}» در پنل وجود ندارد.\n"
+                f"تلاش باقی‌مانده: {left} از ۱۰"
+            ),
+            reply_markup=cancel_reply(),
         )
         return
 
@@ -267,13 +271,16 @@ async def process_buy_username(message: Message, state: FSMContext, bot: Bot):
 
     current_limit = admin_info.get("data_limit") or 0
     used = admin_info.get("used_traffic") or 0
-    current_gb = round(current_limit / (1024**3), 2) if current_limit else "۰ / نامحدود"
-    used_gb = round(used / (1024**3), 2)
+    current_gb = round(current_limit / (1024 ** 3), 2) if current_limit else "۰ / نامحدود"
+    used_gb = round(used / (1024 ** 3), 2)
 
     order_id = await db.create_order(
-        user_id=message.from_user.id, panel_id=data["panel_id"],
-        username=username, plan_id=data["plan_id"],
-        volume_gb=data["volume_gb"], price=data["price"]
+        user_id=message.from_user.id,
+        panel_id=data["panel_id"],
+        username=username,
+        plan_id=data["plan_id"],
+        volume_gb=data["volume_gb"],
+        price=data["price"],
     )
     await state.update_data(order_id=order_id, username=username)
     await state.set_state(Form.waiting_receipt)
@@ -283,32 +290,20 @@ async def process_buy_username(message: Message, state: FSMContext, bot: Bot):
     card_owner = await db.get_setting("card_owner", settings.CARD_OWNER)
 
     pay_text = (
-        f"✅ سفارش ثبت شد
-
-"
-        f"👤 ادمین پنل: <code>{username}</code>
-"
-        f"📊 حجم فعلی ادمین: {current_gb} گیگ | مصرف: {used_gb} گیگ
-"
-        f"📦 پلن: {data['title']} ({data['volume_gb']} گیگ)
-"
-        f"💰 مبلغ: <b>{data['price']:,} تومان</b>
-
-"
-        f"💳 شماره کارت:
-<code>{card_number}</code>
-"
+        "✅ سفارش ثبت شد\n\n"
+        f"👤 ادمین پنل: <code>{username}</code>\n"
+        f"📊 حجم فعلی ادمین: {current_gb} گیگ | مصرف: {used_gb} گیگ\n"
+        f"📦 پلن: {data['title']} ({data['volume_gb']} گیگ)\n"
+        f"💰 مبلغ: <b>{data['price']:,} تومان</b>\n\n"
+        f"💳 شماره کارت:\n<code>{card_number}</code>\n"
     )
     if account_number:
-        pay_text += f"🏦 شماره حساب / شبا:
-<code>{account_number}</code>
-"
-    pay_text += f"صاحب حساب: {card_owner}
-
-پس از واریز، <b>عکس رسید</b> را ارسال کنید."
-
+        pay_text += f"🏦 شماره حساب / شبا:\n<code>{account_number}</code>\n"
+    pay_text += (
+        f"صاحب حساب: {card_owner}\n\n"
+        "پس از واریز، <b>عکس رسید</b> را ارسال کنید."
+    )
     await message.answer(pay_text, parse_mode="HTML", reply_markup=cancel_reply())
-
 
 
 @router.message(Form.waiting_receipt, F.photo)
