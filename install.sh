@@ -127,6 +127,9 @@ get_config() {
     echo "          Bot Configuration"
     echo "========================================"
     echo -e "${NC}"
+    echo "Only bot startup info is needed."
+    echo "Card, panels, plans and other settings are configured inside the bot."
+    echo ""
 
     # Bot Token
     while true; do
@@ -148,28 +151,11 @@ get_config() {
         echo -e "${RED}Admin ID must be a number.${NC}"
     done
 
-    # Card Number
-    echo -e "${YELLOW}Enter card number (for card-to-card payment):${NC}"
-    read -r CARD_NUMBER
-    CARD_NUMBER=${CARD_NUMBER:-"6037-XXXX-XXXX-XXXX"}
-
-    # Card Owner
-    echo -e "${YELLOW}Enter card owner name:${NC}"
-    read -r CARD_OWNER
-    CARD_OWNER=${CARD_OWNER:-"Card Owner"}
-
-    # Backup time
-    echo -e "${YELLOW}Auto-backup hour (0-23, default 3):${NC}"
-    read -r BACKUP_HOUR
-    BACKUP_HOUR=${BACKUP_HOUR:-3}
-
-    # Write .env
+    # Write .env (minimal)
     cat > "$BOT_DIR/.env" << EOF
 BOT_TOKEN=$BOT_TOKEN
 ADMIN_ID=$ADMIN_ID
-CARD_NUMBER=$CARD_NUMBER
-CARD_OWNER=$CARD_OWNER
-BACKUP_HOUR=$BACKUP_HOUR
+BACKUP_HOUR=3
 BACKUP_MINUTE=0
 EOF
 
@@ -230,7 +216,7 @@ show_final_info() {
     echo "  journalctl -u $SERVICE_NAME -f"
     echo "  systemctl restart $SERVICE_NAME"
     echo ""
-    echo -e "${GREEN}Start the bot in Telegram and add your panel + volume plans.${NC}"
+    echo -e "${GREEN}Start the bot in Telegram. Configure panel, plans and card payment inside the bot.${NC}"
 }
 
 # ---------- Update ----------
