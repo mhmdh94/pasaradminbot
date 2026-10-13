@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  PasarVolumeBot Installer
+#  PasarAdminBot Installer
 #  ربات خرید حجم برای پنل پاسارگارد
+#  GitHub: https://github.com/mhmdh94/pasaradminbot
 # ============================================================
 
 set -e
@@ -15,16 +16,18 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-BOT_DIR="/opt/pasarvolumebot"
-SERVICE_NAME="pasarvolumebot"
+BOT_DIR="/opt/pasaradminbot"
+SERVICE_NAME="pasaradminbot"
 PYTHON_BIN="python3"
+GITHUB_REPO="mhmdh94/pasaradminbot"
 
 print_logo() {
     clear
     echo -e "${CYAN}"
     echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║           PasarVolumeBot - Installer                     ║"
+    echo "║           PasarAdminBot - Installer                      ║"
     echo "║     ربات خرید حجم برای پنل پاسارگارد                     ║"
+    echo "║     github.com/mhmdh94/pasaradminbot                     ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -80,21 +83,33 @@ clone_or_copy_bot() {
 
     # If running from the extracted source (current directory has bot/)
     if [ -d "./bot" ] && [ -f "./bot/main.py" ]; then
-        echo -e "${BLUE}[*] کپی فایل‌های منبع...${NC}"
+        echo -e "${BLUE}[*] کپی فایل‌های منبع از مسیر فعلی...${NC}"
         cp -r ./bot ./requirements.txt ./install.sh "$BOT_DIR/" 2>/dev/null || true
         cp -r ./.env.example "$BOT_DIR/" 2>/dev/null || true
-        # Also copy any other files
         cp -r ./* "$BOT_DIR/" 2>/dev/null || true
     else
-        # For GitHub install: user should have cloned already or we ask for repo
-        echo -e "${YELLOW}فایل‌های منبع در مسیر فعلی پیدا نشد.${NC}"
-        echo -e "لطفاً مسیر کامل پوشه سورس ربات را وارد کنید (یا Enter برای خروج):"
-        read -r SRC_PATH
-        if [ -z "$SRC_PATH" ] || [ ! -d "$SRC_PATH/bot" ]; then
-            echo -e "${RED}مسیر نامعتبر.${NC}"
+        # Clone from GitHub
+        echo -e "${BLUE}[*] کلون از گیت‌هاب ($GITHUB_REPO)...${NC}"
+        echo -e "${YELLOW}اگر ریپو خصوصی است، توکن گیت‌هاب را وارد کنید (در غیر این صورت Enter بزنید):${NC}"
+        read -r GH_TOKEN
+
+        TMP_CLONE="/tmp/pasaradminbot_clone_$$"
+        rm -rf "$TMP_CLONE"
+
+        if [ -n "$GH_TOKEN" ]; then
+            git clone "https://${GH_TOKEN}@github.com/${GITHUB_REPO}.git" "$TMP_CLONE"
+        else
+            git clone "https://github.com/${GITHUB_REPO}.git" "$TMP_CLONE"
+        fi
+
+        if [ ! -d "$TMP_CLONE/bot" ]; then
+            echo -e "${RED}[ERROR] کلون ناموفق بود یا ساختار پروژه اشتباه است.${NC}"
+            rm -rf "$TMP_CLONE"
             exit 1
         fi
-        cp -r "$SRC_PATH"/* "$BOT_DIR/"
+
+        cp -r "$TMP_CLONE"/* "$BOT_DIR/"
+        rm -rf "$TMP_CLONE"
     fi
 
     mkdir -p "$BOT_DIR/data"
@@ -174,7 +189,7 @@ create_systemd_service() {
 
     cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=PasarVolumeBot - Volume Buyer for PasarGuard
+Description=PasarAdminBot - Volume Buyer for PasarGuard
 After=network.target
 
 [Service]

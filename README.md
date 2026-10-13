@@ -1,6 +1,8 @@
-# 🤖 PasarVolumeBot
+# 🤖 PasarAdminBot
 
 ربات تلگرام برای **خرید حجم اضافه** مخصوص پنل **پاسارگارد (PasarGuard)**
+
+**گیت‌هاب:** https://github.com/mhmdh94/pasaradminbot
 
 ---
 
@@ -28,27 +30,27 @@
 
 ## 🚀 نصب روی سرور
 
-### روش ۱: از گیت‌هاب خصوصی (پیشنهادی)
+### روش پیشنهادی (یک خطی)
 
 ```bash
-# کلون کردن ریپو (توکن شخصی گیت‌هاب خودت را جایگزین کن)
-git clone https://<TOKEN>@github.com/<USERNAME>/PasarVolumeBot.git
-cd PasarVolumeBot
+bash <(curl -fsSL https://raw.githubusercontent.com/mhmdh94/pasaradminbot/main/install.sh)
+```
 
-# اجرای نصب
+> اگر ریپو **خصوصی** است، اول کلون کن:
+
+```bash
+# توکن شخصی گیت‌هاب را جایگزین TOKEN کن
+git clone https://TOKEN@github.com/mhmdh94/pasaradminbot.git
+cd pasaradminbot
 sudo bash install.sh
 ```
 
-سپس گزینه **۱** را انتخاب کنید و اطلاعات خواسته شده را وارد کنید.
-
-### روش ۲: آپلود دستی
-
-1. فایل‌های پروژه را روی سرور آپلود کنید (مثلاً با `scp` یا SFTP)
-2. وارد پوشه شوید و اجرا کنید:
-
-```bash
-sudo bash install.sh
-```
+سپس گزینه **۱** را انتخاب کنید و اطلاعات خواسته شده را وارد کنید:
+- توکن ربات
+- آیدی عددی ادمین
+- شماره کارت
+- نام صاحب کارت
+- ساعت بک‌آپ (پیش‌فرض ۳)
 
 ---
 
@@ -56,10 +58,10 @@ sudo bash install.sh
 
 | دستور | توضیح |
 |-------|--------|
-| `systemctl status pasarvolumebot` | وضعیت ربات |
-| `systemctl restart pasarvolumebot` | ری‌استارت |
-| `systemctl stop pasarvolumebot` | توقف |
-| `journalctl -u pasarvolumebot -f` | مشاهده لاگ زنده |
+| `systemctl status pasaradminbot` | وضعیت ربات |
+| `systemctl restart pasaradminbot` | ری‌استارت |
+| `systemctl stop pasaradminbot` | توقف |
+| `journalctl -u pasaradminbot -f` | مشاهده لاگ زنده |
 
 ---
 
@@ -83,7 +85,7 @@ sudo bash install.sh
 ## 📁 ساختار پروژه
 
 ```
-PasarVolumeBot/
+pasaradminbot/
 ├── bot/
 │   ├── main.py
 │   ├── config.py
