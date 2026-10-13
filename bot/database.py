@@ -68,6 +68,18 @@ class Database:
                 state TEXT,
                 data TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS blocked_users (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT,
+                failed_attempts INTEGER DEFAULT 0,
+                blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS username_attempts (
+                user_id INTEGER PRIMARY KEY,
+                attempts INTEGER DEFAULT 0
+            );
         """)
         await self.conn.commit()
 
@@ -238,6 +250,51 @@ class Database:
     async def clear_state(self, user_id: int):
         await self.conn.execute("DELETE FROM users_state WHERE user_id = ?", (user_id,))
         await self.conn.commit()
+
+    # ---------- Block / attempts ----------
+    async def is_blocked(self, user_id: int) -> bool:
+        async with self.conn.execute(
+            "SELECT 1 FROM blocked_users WHERE user_id = ?", (user_id,)
+        ) as c:
+            return await c.fetchone() is not None
+
+    async def block_user(self, user_id: int, reason: str = ""):
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO blocked_users (user_id, reason, failed_attempts) VALUES (?, ?, ?)",
+            (user_id, reason, 10)
+        )
+        await self.conn.commit()
+
+    async def unblock_user(self, user_id: int):
+        await self.conn.execute("DELETE FROM blocked_users WHERE user_id = ?", (user_id,))
+        await self.conn.execute("DELETE FROM username_attempts WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
+
+    async def get_blocked_users(self):
+        async with self.conn.execute("SELECT * FROM blocked_users ORDER BY blocked_at DESC") as c:
+            return [dict(r) for r in await c.fetchall()]
+
+    async def get_attempts(self, user_id: int) -> int:
+        async with self.conn.execute(
+            "SELECT attempts FROM username_attempts WHERE user_id = ?", (user_id,)
+        ) as c:
+            row = await c.fetchone()
+            return int(row["attempts"]) if row else 0
+
+    async def inc_attempts(self, user_id: int) -> int:
+        current = await self.get_attempts(user_id)
+        new_val = current + 1
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO username_attempts (user_id, attempts) VALUES (?, ?)",
+            (user_id, new_val)
+        )
+        await self.conn.commit()
+        return new_val
+
+    async def reset_attempts(self, user_id: int):
+        await self.conn.execute("DELETE FROM username_attempts WHERE user_id = ?", (user_id,))
+        await self.conn.commit()
+
 
 
 db = Database()

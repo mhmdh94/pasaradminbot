@@ -40,6 +40,7 @@ class Form(StatesGroup):
 
     backup_interval = State()
     backup_import = State()
+    search_user = State()
 
 
 def is_admin(user_id: int) -> bool:
@@ -63,6 +64,9 @@ async def go_back(message: Message, state: FSMContext, admin_context: bool = Fal
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    if await db.is_blocked(message.from_user.id) and not is_admin(message.from_user.id):
+        await message.answer("🚫 شما بلاک شده‌اید. با پشتیبانی تماس بگیرید.")
+        return
     admin = is_admin(message.from_user.id)
     text = "👋 به ربات خرید حجم پاسارگارد خوش آمدید.\n\nاز منوی زیر استفاده کنید:"
     if admin:
@@ -87,7 +91,7 @@ async def cancel_btn(message: Message, state: FSMContext):
         Form.add_panel_name, Form.add_panel_url, Form.add_panel_user, Form.add_panel_pass,
         Form.add_plan_title, Form.add_plan_volume, Form.add_plan_price, Form.edit_plan_price,
         Form.set_card_number, Form.set_account_number, Form.set_card_owner,
-        Form.backup_interval, Form.backup_import,
+        Form.backup_interval, Form.backup_import, Form.search_user,
     )
     admin_ctx = False
     if current:
@@ -140,6 +144,9 @@ async def my_orders(message: Message):
 @router.message(F.text == "🛒 خرید حجم")
 @router.message(F.text == "🛒 خرید حجم (ادمین)")
 async def buy_volume_start(message: Message, state: FSMContext):
+    if await db.is_blocked(message.from_user.id) and not is_admin(message.from_user.id):
+        await message.answer("🚫 شما بلاک شده‌اید. با پشتیبانی تماس بگیرید.")
+        return
     panels = await db.get_panels()
     plans = await db.get_plans()
     if not panels:
@@ -208,9 +215,14 @@ async def buy_select_plan_cb(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(Form.buy_username)
-async def process_buy_username(message: Message, state: FSMContext):
+async def process_buy_username(message: Message, state: FSMContext, bot: Bot):
     if message.text == "❌ انصراف":
-        return  # handled by cancel_btn
+        return
+    if await db.is_blocked(message.from_user.id) and not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("🚫 شما بلاک شده‌اید.")
+        return
+
     username = message.text.strip()
     data = await state.get_data()
     api = await get_panel_api(data["panel_id"])
@@ -218,14 +230,44 @@ async def process_buy_username(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ خطا در اتصال به پنل.", reply_markup=user_main_keyboard(is_admin=is_admin(message.from_user.id)))
         return
-    user_info = await api.get_user(username)
-    if not user_info or user_info.get("error"):
-        await message.answer(f"❌ کاربر «{username}» پیدا نشد. دوباره وارد کنید:", reply_markup=cancel_reply())
+
+    # Check panel ADMIN (not regular user)
+    admin_info = await api.get_admin(username)
+    if not admin_info or admin_info.get("error"):
+        attempts = await db.inc_attempts(message.from_user.id)
+        left = 10 - attempts
+        if attempts >= 10:
+            await db.block_user(message.from_user.id, reason="10 wrong admin username")
+            await state.clear()
+            await message.answer("🚫 به دلیل ۱۰ بار یوزرنیم اشتباه، بلاک شدید.")
+            try:
+                await bot.send_message(
+                    settings.ADMIN_ID,
+                    f"🚫 کاربر بلاک شد
+"
+                    f"آیدی: <code>{message.from_user.id}</code>
+"
+                    f"یوزرنیم تلگرام: @{message.from_user.username or '-'}
+"
+                    f"دلیل: ۱۰ بار یوزرنیم ادمین اشتباه",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+        await message.answer(
+            f"❌ ادمینی با نام «{username}» در پنل وجود ندارد.
+"
+            f"تلاش باقی‌مانده: {left} از ۱۰",
+            reply_markup=cancel_reply()
+        )
         return
 
-    current_limit = user_info.get("data_limit") or 0
-    used = user_info.get("used_traffic") or 0
-    current_gb = round(current_limit / (1024**3), 2) if current_limit else "نامحدود"
+    await db.reset_attempts(message.from_user.id)
+
+    current_limit = admin_info.get("data_limit") or 0
+    used = admin_info.get("used_traffic") or 0
+    current_gb = round(current_limit / (1024**3), 2) if current_limit else "۰ / نامحدود"
     used_gb = round(used / (1024**3), 2)
 
     order_id = await db.create_order(
@@ -241,18 +283,32 @@ async def process_buy_username(message: Message, state: FSMContext):
     card_owner = await db.get_setting("card_owner", settings.CARD_OWNER)
 
     pay_text = (
-        f"✅ سفارش #{order_id}\n\n"
-        f"👤 یوزرنیم: <code>{username}</code>\n"
-        f"📊 حجم فعلی: {current_gb} گیگ | مصرف: {used_gb} گیگ\n"
-        f"📦 پلن: {data['title']} ({data['volume_gb']} گیگ)\n"
-        f"💰 مبلغ: <b>{data['price']:,} تومان</b>\n\n"
-        f"💳 شماره کارت:\n<code>{card_number}</code>\n"
+        f"✅ سفارش ثبت شد
+
+"
+        f"👤 ادمین پنل: <code>{username}</code>
+"
+        f"📊 حجم فعلی ادمین: {current_gb} گیگ | مصرف: {used_gb} گیگ
+"
+        f"📦 پلن: {data['title']} ({data['volume_gb']} گیگ)
+"
+        f"💰 مبلغ: <b>{data['price']:,} تومان</b>
+
+"
+        f"💳 شماره کارت:
+<code>{card_number}</code>
+"
     )
     if account_number:
-        pay_text += f"🏦 شماره حساب / شبا:\n<code>{account_number}</code>\n"
-    pay_text += f"صاحب حساب: {card_owner}\n\nپس از واریز، <b>عکس رسید</b> را ارسال کنید."
+        pay_text += f"🏦 شماره حساب / شبا:
+<code>{account_number}</code>
+"
+    pay_text += f"صاحب حساب: {card_owner}
+
+پس از واریز، <b>عکس رسید</b> را ارسال کنید."
 
     await message.answer(pay_text, parse_mode="HTML", reply_markup=cancel_reply())
+
 
 
 @router.message(Form.waiting_receipt, F.photo)
@@ -268,9 +324,9 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
     order = await db.get_order(order_id)
     panel = await db.get_panel(order["panel_id"])
     caption = (
-        f"🧾 رسید سفارش #{order_id}\n\n"
-        f"👤 تلگرام: {message.from_user.id}\n"
-        f"👤 یوزرنیم: <code>{order['username']}</code>\n"
+        f"🧾 رسید پرداخت جدید\n\n"
+        f"👤 تلگرام: <code>{message.from_user.id}</code>\n"
+        f"👤 ادمین پنل: <code>{order['username']}</code>\n"
         f"🖥 پنل: {panel['name'] if panel else '-'}\n"
         f"📦 {order['volume_gb']}GB | 💰 {order['price']:,} تومان\n\nتأیید یا رد:"
     )
@@ -805,11 +861,11 @@ async def cb_approve_order(callback: CallbackQuery, bot: Bot):
         await callback.answer("پنل پیدا نشد", show_alert=True)
         return
     await callback.answer("در حال افزودن...")
-    result = await api.add_volume(order["username"], order["volume_gb"])
+    result = await api.add_volume_to_admin(order["username"], order["volume_gb"])
     if result["success"]:
         await db.update_order(order_id, status="paid")
         text = (
-            f"✅ سفارش #{order_id} تأیید شد.\n{result['message']}\n"
+            f"✅ پرداخت تأیید شد.\n{result['message']}\n"
             f"قبل: {result.get('old_limit_gb')} گیگ → بعد: {result.get('new_limit_gb')} گیگ"
         )
         try:
@@ -819,8 +875,8 @@ async def cb_approve_order(callback: CallbackQuery, bot: Bot):
         try:
             await bot.send_message(
                 order["user_id"],
-                f"✅ سفارش #{order_id} تأیید شد.\n"
-                f"حجم {order['volume_gb']} گیگ به «{order['username']}» اضافه شد."
+                f"✅ پرداخت شما تأیید شد.\n"
+                f"حجم {order['volume_gb']} گیگ به ادمین «{order['username']}» اضافه شد."
             )
         except Exception:
             pass
@@ -836,13 +892,13 @@ async def cb_reject_order(callback: CallbackQuery, bot: Bot):
     order = await db.get_order(order_id)
     await db.update_order(order_id, status="rejected")
     try:
-        await callback.message.edit_caption(caption=f"❌ سفارش #{order_id} رد شد.", reply_markup=None)
+        await callback.message.edit_caption(caption=f"❌ پرداخت رد شد.", reply_markup=None)
     except Exception:
         pass
     await callback.answer("رد شد")
     if order:
         try:
-            await bot.send_message(order["user_id"], f"❌ سفارش #{order_id} رد شد.")
+            await bot.send_message(order["user_id"], f"❌ پرداخت رد شد.")
         except Exception:
             pass
 
@@ -863,6 +919,100 @@ async def bot_status(message: Message):
         f"👤 ادمین: <code>{settings.ADMIN_ID}</code>",
         parse_mode="HTML"
     )
+
+
+
+# ---------- Search user (Telegram ID) ----------
+
+@router.message(F.text == "🔍 سرچ کاربر")
+async def search_user_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.set_state(Form.search_user)
+    await state.update_data(admin_context=True)
+    await message.answer(
+        "🔍 آیدی عددی کاربر تلگرام را وارد کنید:",
+        reply_markup=cancel_reply()
+    )
+
+
+@router.message(Form.search_user)
+async def search_user_process(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
+        return
+    try:
+        uid = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ فقط عدد (آیدی تلگرام).")
+        return
+    orders = await db.get_user_orders(uid, limit=20)
+    blocked = await db.is_blocked(uid)
+    attempts = await db.get_attempts(uid)
+    lines = [
+        f"👤 اطلاعات کاربر\n",
+        f"آیدی: <code>{uid}</code>",
+        f"وضعیت: {'🚫 بلاک' if blocked else '✅ فعال'}",
+        f"تلاش ناموفق یوزرنیم: {attempts}/10",
+        f"تعداد سفارش‌ها: {len(orders)}",
+        "",
+    ]
+    if orders:
+        lines.append("آخرین سفارش‌ها:")
+        for o in orders[:10]:
+            lines.append(
+                f"• {o['username']} | {o['volume_gb']}GB | {o['price']:,}ت | {o['status']}"
+            )
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    kb = InlineKeyboardBuilder()
+    if blocked:
+        kb.row(InlineKeyboardButton(text="✅ آنبلاک", callback_data=f"unblock_{uid}"))
+    else:
+        kb.row(InlineKeyboardButton(text="🚫 بلاک", callback_data=f"block_{uid}"))
+    await state.clear()
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+    await message.answer("پنل ادمین:", reply_markup=admin_panel_keyboard())
+
+
+@router.callback_query(F.data.startswith("unblock_"))
+async def cb_unblock(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    uid = int(callback.data.split("_")[1])
+    await db.unblock_user(uid)
+    await callback.answer("آنبلاک شد", show_alert=True)
+    await callback.message.answer(f"✅ کاربر <code>{uid}</code> آنبلاک شد.", parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("block_"))
+async def cb_block(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    uid = int(callback.data.split("_")[1])
+    await db.block_user(uid, reason="manual by admin")
+    await callback.answer("بلاک شد", show_alert=True)
+    await callback.message.answer(f"🚫 کاربر <code>{uid}</code> بلاک شد.", parse_mode="HTML")
+
+
+@router.message(F.text == "🚫 کاربران بلاک‌شده")
+async def list_blocked(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    rows = await db.get_blocked_users()
+    if not rows:
+        await message.answer("هیچ کاربر بلاک‌شده‌ای نیست.")
+        return
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    lines = ["🚫 کاربران بلاک‌شده:\n"]
+    kb = InlineKeyboardBuilder()
+    for r in rows[:30]:
+        lines.append(f"• <code>{r['user_id']}</code> — {r.get('reason') or '-'}")
+        kb.row(InlineKeyboardButton(
+            text=f"✅ آنبلاک {r['user_id']}",
+            callback_data=f"unblock_{r['user_id']}"
+        ))
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
 
 
 @router.message(Command("cancel"))

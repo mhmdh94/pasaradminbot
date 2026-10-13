@@ -24,6 +24,10 @@ def admin_panel_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text="🗄 تنظیمات بک‌آپ"),
     )
     builder.row(
+        KeyboardButton(text="🔍 سرچ کاربر"),
+        KeyboardButton(text="🚫 کاربران بلاک‌شده"),
+    )
+    builder.row(
         KeyboardButton(text="ℹ️ وضعیت ربات"),
     )
     builder.row(KeyboardButton(text="🔙 بازگشت به منوی اصلی"))

@@ -14,31 +14,23 @@ class PasarGuardAPI:
         self.token_time = panel.get("token_time") or 0
 
     async def _get_token(self) -> Optional[str]:
-        # Token valid for ~1 hour, refresh if older than 50 min
         if self.token and (time.time() - self.token_time) < 3000:
             return self.token
-
         async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
             try:
                 resp = await client.post(
                     f"{self.base_url}/api/admin/token",
-                    data={
-                        "username": self.username,
-                        "password": self.password
-                    },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"}
+                    data={"username": self.username, "password": self.password},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
                     self.token = data.get("access_token")
                     self.token_time = int(time.time())
-                    await db.update_panel_token(
-                        self.panel["id"], self.token, self.token_time
-                    )
+                    await db.update_panel_token(self.panel["id"], self.token, self.token_time)
                     return self.token
-                else:
-                    print(f"[PasarGuard] Token error: {resp.status_code} - {resp.text}")
-                    return None
+                print(f"[PasarGuard] Token error: {resp.status_code} - {resp.text}")
+                return None
             except Exception as e:
                 print(f"[PasarGuard] Token exception: {e}")
                 return None
@@ -47,74 +39,71 @@ class PasarGuardAPI:
         token = await self._get_token()
         if not token:
             return None
-
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {token}"
         headers["Accept"] = "application/json"
         if "json" in kwargs:
             headers["Content-Type"] = "application/json"
-
         async with httpx.AsyncClient(verify=False, timeout=20.0) as client:
             try:
                 resp = await client.request(
-                    method,
-                    f"{self.base_url}{path}",
-                    headers=headers,
-                    **kwargs
+                    method, f"{self.base_url}{path}", headers=headers, **kwargs
                 )
                 if resp.status_code in (200, 201):
-                    return resp.json()
-                else:
-                    print(f"[PasarGuard] {method} {path} -> {resp.status_code}: {resp.text}")
-                    return {"error": True, "status": resp.status_code, "detail": resp.text}
+                    return resp.json() if resp.content else {}
+                print(f"[PasarGuard] {method} {path} -> {resp.status_code}: {resp.text}")
+                return {"error": True, "status": resp.status_code, "detail": resp.text}
             except Exception as e:
                 print(f"[PasarGuard] Request exception: {e}")
                 return {"error": True, "detail": str(e)}
 
-    async def get_user(self, username: str) -> Optional[Dict]:
-        return await self._request("GET", f"/api/user/{username}")
+    # ---------- Admin (volume is on panel admins) ----------
 
-    async def modify_user(self, username: str, data: Dict) -> Optional[Dict]:
-        return await self._request("PUT", f"/api/user/{username}", json=data)
+    async def get_admin(self, username: str) -> Optional[Dict]:
+        # Try by-username then legacy path
+        for path in (f"/api/admin/by-username/{username}", f"/api/admin/{username}"):
+            result = await self._request("GET", path)
+            if result and not result.get("error"):
+                return result
+            if result and result.get("status") == 404:
+                continue
+        return result if result else {"error": True, "detail": "not found"}
 
-    async def add_volume(self, username: str, extra_gb: int) -> Dict[str, Any]:
-        """
-        Add volume (in GB) to existing user.
-        Returns dict with success status and message.
-        """
-        user = await self.get_user(username)
-        if not user or user.get("error"):
-            return {
-                "success": False,
-                "message": f"کاربر «{username}» در پنل پیدا نشد."
-            }
+    async def modify_admin(self, username: str, data: Dict) -> Optional[Dict]:
+        for path in (f"/api/admin/by-username/{username}", f"/api/admin/{username}"):
+            result = await self._request("PUT", path, json=data)
+            if result and not result.get("error"):
+                return result
+        return result
 
-        current_limit = user.get("data_limit") or 0  # bytes
-        # 0 means unlimited
+    async def add_volume_to_admin(self, username: str, extra_gb: int) -> Dict[str, Any]:
+        admin = await self.get_admin(username)
+        if not admin or admin.get("error"):
+            return {"success": False, "message": f"ادمین «{username}» در پنل پیدا نشد."}
+
+        current_limit = admin.get("data_limit")
+        if current_limit is None:
+            current_limit = 0
+        # 0 = unlimited in some panels
         if current_limit == 0:
-            return {
-                "success": False,
-                "message": "حجم کاربر نامحدود است. نمی‌توان حجم اضافه کرد."
-            }
+            # still allow setting from 0 by adding
+            pass
 
         extra_bytes = extra_gb * 1024 * 1024 * 1024
-        new_limit = current_limit + extra_bytes
+        new_limit = (current_limit or 0) + extra_bytes
 
-        result = await self.modify_user(username, {"data_limit": new_limit})
+        result = await self.modify_admin(username, {"data_limit": new_limit})
         if result and not result.get("error"):
+            used = admin.get("used_traffic") or 0
             return {
                 "success": True,
-                "message": f"✅ حجم {extra_gb} گیگابایت با موفقیت اضافه شد.",
-                "old_limit_gb": round(current_limit / (1024**3), 2),
+                "message": f"✅ حجم {extra_gb} گیگابایت به ادمین اضافه شد.",
+                "old_limit_gb": round((current_limit or 0) / (1024**3), 2),
                 "new_limit_gb": round(new_limit / (1024**3), 2),
-                "used_gb": round((user.get("used_traffic") or 0) / (1024**3), 2)
+                "used_gb": round(used / (1024**3), 2),
             }
-        else:
-            detail = result.get("detail", "خطای ناشناخته") if result else "خطا در ارتباط با پنل"
-            return {
-                "success": False,
-                "message": f"خطا در افزودن حجم: {detail}"
-            }
+        detail = (result or {}).get("detail", "خطای ناشناخته")
+        return {"success": False, "message": f"خطا در افزودن حجم: {detail}"}
 
     async def test_connection(self) -> Dict[str, Any]:
         token = await self._get_token()
