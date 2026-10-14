@@ -386,13 +386,30 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
     order = await db.get_order(order_id)
     panel = await db.get_panel(order["panel_id"])
 
-    caption = (
-        "🧾 رسید پرداخت\n\n"
-        f"👤 تلگرام: <code>{message.from_user.id}</code>\n"
-        f"👤 ادمین پنل: <code>{order['username']}</code>\n"
-        f"🖥 {panel['name'] if panel else '-'}\n"
-        f"📦 {order['volume_gb']} گیگ | 💰 {order['price']:,} تومان"
-    )
+    will_auto = await db.should_auto_approve(message.from_user.id)
+    if will_auto:
+        try:
+            delay_m = int(await db.get_setting("auto_approve_delay_minutes", "5"))
+        except ValueError:
+            delay_m = 5
+        auto_note = f"⚡ تأیید خودکار فعال است (بعد از {delay_m} دقیقه)"
+    else:
+        auto_note = (
+            "⚠️ تأیید خودکار برای این کاربر خاموش است — "
+            "حتماً دستی تأیید یا رد کنید"
+        )
+
+    lines = [
+        "🧾 رسید پرداخت",
+        "",
+        f"👤 تلگرام: <code>{message.from_user.id}</code>",
+        f"👤 ادمین پنل: <code>{order['username']}</code>",
+        f"🖥 {panel['name'] if panel else '-'}",
+        f"📦 {order['volume_gb']} گیگ | 💰 {order['price']:,} تومان",
+        "",
+        auto_note,
+    ]
+    caption = "\n".join(lines)
     try:
         await bot.send_photo(
             settings.ADMIN_ID, photo=file_id, caption=caption,
@@ -1045,10 +1062,21 @@ async def autoap(callback: CallbackQuery):
         return
     uid = int(callback.data.split("_")[1])
     u = await db.get_bot_user(uid)
-    newv = 0 if (u and u.get("auto_approve")) else 1
+    # force OFF (0) or force ON (1) — never leave ambiguous
+    cur = None if not u else u.get("auto_approve")
+    if cur is None:
+        # inherit was on/off based on global; toggle to opposite of global
+        default_on = await db.get_setting("auto_approve_default", "1") == "1"
+        newv = 0 if default_on else 1
+    else:
+        newv = 0 if int(cur) else 1
     await db.upsert_bot_user(uid)
     await db.update_bot_user(uid, auto_approve=newv)
-    await callback.answer("تأیید خودکار: " + ("روشن" if newv else "خاموش"))
+    await callback.answer("تأیید خودکار این کاربر: " + ("✅ روشن" if newv else "❌ خاموش"))
+    await callback.message.answer(
+        f"کاربر <code>{uid}</code> — تأیید خودکار: {'✅ روشن' if newv else '❌ خاموش (فقط دستی)'}",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data.startswith("uorders_"))
@@ -1155,8 +1183,14 @@ async def approve(callback: CallbackQuery, bot: Bot):
         return
     oid = int(callback.data.split("_")[2])
     order = await db.get_order(oid)
-    if not order or order["status"] == "paid":
-        await callback.answer("نامعتبر", show_alert=True)
+    if not order:
+        await callback.answer("سفارش پیدا نشد", show_alert=True)
+        return
+    if order["status"] == "paid":
+        await callback.answer("قبلاً تأیید شده", show_alert=True)
+        return
+    if order["status"] == "rejected":
+        await callback.answer("این سفارش رد شده و قابل تأیید نیست", show_alert=True)
         return
     api = await get_panel_api(order["panel_id"])
     if not api:
@@ -1189,17 +1223,32 @@ async def reject(callback: CallbackQuery, bot: Bot):
         return
     oid = int(callback.data.split("_")[2])
     order = await db.get_order(oid)
+    if not order:
+        await callback.answer("سفارش پیدا نشد", show_alert=True)
+        return
+    if order.get("status") == "paid":
+        await callback.answer("قبلاً تأیید شده و قابل رد نیست", show_alert=True)
+        return
+    if order.get("status") == "rejected":
+        await callback.answer("قبلاً رد شده", show_alert=True)
+        return
+    # mark rejected FIRST so auto-approve cron cannot pick it up
     await db.update_order(oid, status="rejected")
     try:
-        await callback.message.edit_caption(caption="❌ رد شد", reply_markup=None)
+        await callback.message.edit_caption(
+            caption="❌ پرداخت رد شد — تأیید خودکار غیرفعال برای این سفارش",
+            reply_markup=None,
+        )
     except Exception:
-        pass
-    await callback.answer("رد")
-    if order:
         try:
-            await bot.send_message(order["user_id"], "❌ پرداخت رد شد.")
+            await callback.message.answer("❌ پرداخت رد شد")
         except Exception:
             pass
+    await callback.answer("رد شد")
+    try:
+        await bot.send_message(order["user_id"], "❌ پرداخت رد شد.")
+    except Exception:
+        pass
 
 
 @router.message(F.text == "ℹ️ وضعیت ربات_DISABLED")

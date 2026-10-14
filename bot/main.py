@@ -103,9 +103,13 @@ async def cleanup_old_orders():
 
 async def process_auto_approvals(bot: Bot):
     """
-    Like Mirza: receipt is already sent to admin.
-    After configured delay, auto-approve pending orders for users
-    who have auto_approve OR when global default auto_approve is on.
+    Mirza-style:
+    - Receipt always goes to admin first.
+    - After delay, only status=pending orders are auto-approved.
+    - Rejected/paid orders are never touched.
+    - Global auto ON => all users inherit ON, unless user forced OFF (auto_approve=0).
+    - User forced ON (auto_approve=1) => auto even if global OFF.
+    - User NULL/missing => inherit global.
     """
     try:
         default_auto = await db.get_setting("auto_approve_default", "0") == "1"
@@ -114,63 +118,62 @@ async def process_auto_approvals(bot: Bot):
         except ValueError:
             delay_min = 5
 
-        pending = await db.get_pending_orders()
+        pending = await db.get_pending_for_auto(delay_min)
         for order in pending:
-            if order.get("status") != "pending":
-                continue
-            # only after delay from updated_at / created_at
-            try:
-                created = order.get("updated_at") or order.get("created_at")
-                # SQLite timestamp string
-                if isinstance(created, str):
-                    try:
-                        created_dt = datetime.fromisoformat(created.replace("Z", ""))
-                    except Exception:
-                        created_dt = datetime.strptime(created[:19], "%Y-%m-%d %H:%M:%S")
-                else:
-                    continue
-                if datetime.utcnow() - created_dt < timedelta(minutes=delay_min):
-                    continue
-            except Exception:
+            # re-read — admin may have rejected/approved
+            fresh = await db.get_order(order["id"])
+            if not fresh or fresh.get("status") != "pending":
                 continue
 
-            u = await db.get_bot_user(order["user_id"])
-            user_auto = bool(u and u.get("auto_approve"))
-            if not (default_auto or user_auto):
+            if not await db.should_auto_approve(fresh["user_id"]):
                 continue
 
-            api = await get_panel_api(order["panel_id"])
+            # final race check right before API call
+            fresh2 = await db.get_order(fresh["id"])
+            if not fresh2 or fresh2.get("status") != "pending":
+                continue
+
+            api = await get_panel_api(fresh2["panel_id"])
             if not api:
                 continue
-            result = await api.add_volume_to_admin(order["username"], order["volume_gb"])
+            result = await api.add_volume_to_admin(fresh2["username"], fresh2["volume_gb"])
             if not result.get("success"):
-                logger.warning("auto approve failed order %s: %s", order["id"], result.get("message"))
+                logger.warning("auto approve failed order %s: %s", fresh2["id"], result.get("message"))
                 continue
 
-            await db.update_order(order["id"], status="paid")
+            # only mark paid if still pending
+            fresh3 = await db.get_order(fresh2["id"])
+            if not fresh3 or fresh3.get("status") != "pending":
+                logger.info("skip auto: order %s already %s", fresh2["id"], (fresh3 or {}).get("status"))
+                continue
+
+            await db.update_order(fresh2["id"], status="paid")
             msg = (
                 f"✅ پرداخت تأیید شد.\n"
-                f"حجم {order['volume_gb']} گیگ به ادمین «{order['username']}» اضافه شد."
+                f"حجم {fresh2['volume_gb']} گیگ به ادمین «{fresh2['username']}» اضافه شد."
             )
             try:
-                await bot.send_message(order["user_id"], msg)
+                await bot.send_message(fresh2["user_id"], msg)
             except Exception:
                 pass
             try:
                 await bot.send_message(
                     settings.ADMIN_ID,
-                    f"✅ تأیید خودکار سفارش\n"
-                    f"کاربر: <code>{order['user_id']}</code>\n"
-                    f"ادمین پنل: <code>{order['username']}</code>\n"
-                    f"{order['volume_gb']}GB | {order['price']:,} تومان\n"
-                    f"{result.get('message', '')}",
+                    (
+                        f"✅ تأیید خودکار\n"
+                        f"کاربر: <code>{fresh2['user_id']}</code>\n"
+                        f"ادمین پنل: <code>{fresh2['username']}</code>\n"
+                        f"{fresh2['volume_gb']}GB | {fresh2['price']:,} تومان\n"
+                        f"{result.get('message', '')}"
+                    ),
                     parse_mode="HTML",
                 )
             except Exception:
                 pass
-            logger.info("auto-approved order %s", order["id"])
+            logger.info("auto-approved order %s", fresh2["id"])
     except Exception as e:
         logger.error("auto approve: %s", e)
+
 
 
 async def on_startup(bot: Bot):

@@ -278,7 +278,7 @@ show_menu() {
     print_logo
     echo -e "${CYAN}1)${NC} Install bot"
     echo -e "${CYAN}2)${NC} Update bot"
-    echo -e "${CYAN}3)${NC} Remove bot"
+    echo -e "${CYAN}3)${NC} Remove bot (or: bash install.sh remove)"
     echo -e "${CYAN}4)${NC} Service status"
     echo -e "${CYAN}5)${NC} Restart service"
     echo -e "${CYAN}6)${NC} Exit"

@@ -67,7 +67,7 @@ class Database:
                 full_name TEXT,
                 phone TEXT,
                 is_verified INTEGER DEFAULT 0,
-                auto_approve INTEGER DEFAULT 0,
+                auto_approve INTEGER DEFAULT NULL,
                 total_paid INTEGER DEFAULT 0,
                 total_volume_gb INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -133,11 +133,11 @@ class Database:
             "require_iran_phone": "0",
             "require_verify": "0",
             "allow_buy": "1",
-            "auto_approve_default": "0",
+            "auto_approve_default": "1",
             "report_channel": "",
             "volume_check_hours": "6",
             "volume_thresholds": "80,85,90,95,100",
-            "auto_approve_delay_minutes": "0",
+            "auto_approve_delay_minutes": "5",
         }
         for k, v in defaults.items():
             cur = await self.conn.execute("SELECT 1 FROM settings WHERE key=?", (k,))
@@ -262,8 +262,9 @@ class Database:
         await self.conn.commit()
 
     async def get_pending_orders(self) -> List[Dict]:
+        """Only orders with receipt waiting for admin decision (not rejected/paid)."""
         async with self.conn.execute(
-            "SELECT * FROM orders WHERE status IN ('waiting_receipt','pending') ORDER BY created_at DESC"
+            "SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at DESC"
         ) as c:
             return [dict(r) for r in await c.fetchall()]
 
@@ -481,6 +482,26 @@ class Database:
         async with self.conn.execute(q) as c:
             row = await c.fetchone()
             return dict(row) if row else {}
+
+    async def should_auto_approve(self, user_id: int) -> bool:
+        """Global ON => all inherit ON; user flag 0 force off, 1 force on, NULL inherit."""
+        default_auto = await self.get_setting("auto_approve_default", "1") == "1"
+        u = await self.get_bot_user(user_id)
+        if not u or u.get("auto_approve") is None:
+            return default_auto
+        return bool(int(u["auto_approve"]))
+
+    async def get_pending_for_auto(self, delay_minutes: int):
+        """Pending orders older than delay_minutes (SQLite time)."""
+        async with self.conn.execute(
+            """SELECT * FROM orders
+               WHERE status = 'pending'
+               AND receipt_file_id IS NOT NULL
+               AND datetime(COALESCE(updated_at, created_at)) <= datetime('now', ?)
+               ORDER BY created_at ASC""",
+            (f"-{int(delay_minutes)} minutes",),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
 
 
 db = Database()
