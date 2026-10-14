@@ -61,9 +61,11 @@ def plans_list(plans: List[Dict]) -> InlineKeyboardMarkup:
         st = "✅" if p["is_active"] else "❌"
         vol = p["volume_gb"]
         vol_txt = f"{st} {vol // 1024} ترابایت" if vol >= 1024 and vol % 1024 == 0 else f"{st} {vol} گیگ"
+        per = round(p["price"] / vol) if vol else 0
         b.row(
             InlineKeyboardButton(text=vol_txt, callback_data=f"plan_{p['id']}"),
-            InlineKeyboardButton(text=f"{p['price']:,} تومان", callback_data=f"plan_{p['id']}"),
+            InlineKeyboardButton(text=f"{p['price']:,} ت", callback_data=f"plan_{p['id']}"),
+            InlineKeyboardButton(text=f"هرگیگ {per:,}", callback_data=f"plan_{p['id']}"),
         )
     b.row(InlineKeyboardButton(text="➕ افزودن پلن", callback_data="add_plan"))
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
@@ -94,9 +96,12 @@ def buy_select_plan(plans: List[Dict]) -> InlineKeyboardMarkup:
     for p in plans:
         vol = p["volume_gb"]
         vol_txt = f"{vol // 1024} ترابایت" if vol >= 1024 and vol % 1024 == 0 else f"{vol} گیگ"
+        per = round(p["price"] / vol) if vol else 0
+        # سه ستون: حجم | مبلغ کل | قیمت هر گیگ
         b.row(
             InlineKeyboardButton(text=vol_txt, callback_data=f"buy_plan_{p['id']}"),
-            InlineKeyboardButton(text=f"{p['price']:,} تومان", callback_data=f"buy_plan_{p['id']}"),
+            InlineKeyboardButton(text=f"{p['price']:,} ت", callback_data=f"buy_plan_{p['id']}"),
+            InlineKeyboardButton(text=f"هرگیگ {per:,}", callback_data=f"buy_plan_{p['id']}"),
         )
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="cancel_buy"))
     return b.as_markup()
