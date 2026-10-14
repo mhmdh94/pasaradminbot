@@ -16,7 +16,7 @@ from bot.keyboards.inline import (
     finance_keyboard, account_info_keyboard, discount_menu_keyboard,
     discount_actions, payment_discount_kb, backup_settings_keyboard,
     bot_settings_keyboard, cron_settings_keyboard, user_search_kb,
-    start_notify_kb, user_panels_admin_kb,
+    start_notify_kb, user_panels_admin_kb, request_phone_keyboard,
 )
 from bot.services.pasarguard import get_panel_api
 
@@ -53,6 +53,50 @@ class Form(StatesGroup):
 
 def is_admin(uid: int) -> bool:
     return uid == settings.ADMIN_ID
+
+
+async def check_user_access(message: Message, *, need_buy: bool = False) -> bool:
+    """Mirza-style gates: bot on, phone, verify. Admins always pass."""
+    uid = message.from_user.id
+    if is_admin(uid):
+        return True
+    if await db.is_blocked(uid):
+        await message.answer("🚫 شما بلاک شده‌اید.")
+        return False
+    if await db.get_setting("bot_enabled", "1") != "1":
+        await message.answer("⛔️ ربات خاموش است.")
+        return False
+    if need_buy and await db.get_setting("allow_buy", "1") != "1":
+        await message.answer("⛔️ خرید حجم فعلاً غیرفعال است.")
+        return False
+    u = await db.get_bot_user(uid)
+    if await db.get_setting("require_phone", "0") == "1":
+        phone = (u or {}).get("phone") if u else None
+        if not phone:
+            await message.answer(
+                "📱 برای استفاده از ربات باید شماره تلفن خود را تأیید کنید.\nدکمه زیر را بزنید:",
+                reply_markup=request_phone_keyboard(),
+            )
+            return False
+    if await db.get_setting("require_verify", "0") == "1":
+        if not u or not u.get("is_verified"):
+            await message.answer(
+                "🪪 حساب شما هنوز احراز هویت نشده است.\n"
+                "پس از تأیید توسط ادمین می‌توانید از ربات استفاده کنید."
+            )
+            return False
+    return True
+
+
+def is_iran_phone(phone: str) -> bool:
+    p = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+    if p.startswith("+98"):
+        p = "0" + p[3:]
+    if p.startswith("98") and len(p) >= 12:
+        p = "0" + p[2:]
+    return p.startswith("09") and len(p) == 11
+
+
 
 
 async def report(bot: Bot, text: str):
@@ -125,6 +169,50 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     if admin:
         text += "\n\n⚙️ شما ادمین هستید."
     await message.answer(text, reply_markup=user_main_keyboard(is_admin=admin))
+    # if phone required and not set, prompt immediately
+    if not admin and await db.get_setting("require_phone", "0") == "1":
+        u = await db.get_bot_user(uid)
+        if not u or not u.get("phone"):
+            await message.answer(
+                "📱 برای ادامه، شماره تلفن خود را ارسال کنید:",
+                reply_markup=request_phone_keyboard(),
+            )
+            return
+    if not admin and await db.get_setting("require_verify", "0") == "1":
+        u = await db.get_bot_user(uid)
+        if not u or not u.get("is_verified"):
+            await message.answer(
+                "🪪 حساب شما احراز هویت نشده. منتظر تأیید ادمین بمانید."
+            )
+
+
+
+@router.message(F.contact)
+async def on_contact(message: Message, state: FSMContext):
+    """Save shared phone (must be the user's own contact)."""
+    uid = message.from_user.id
+    contact = message.contact
+    if contact.user_id and contact.user_id != uid:
+        await message.answer("❌ فقط شماره خودتان را ارسال کنید.")
+        return
+    phone = contact.phone_number or ""
+    if not phone.startswith("+"):
+        phone = "+" + phone.lstrip("+")
+    if await db.get_setting("require_iran_phone", "0") == "1":
+        if not is_iran_phone(phone):
+            await message.answer(
+                "❌ فقط شماره موبایل ایرانی (09xxxxxxxxx) پذیرفته می‌شود.\nدوباره تلاش کنید:",
+                reply_markup=request_phone_keyboard(),
+            )
+            return
+    await db.upsert_bot_user(uid, username=message.from_user.username, full_name=message.from_user.full_name or "")
+    await db.update_bot_user(uid, phone=phone)
+    await state.clear()
+    await message.answer(
+        f"✅ شماره شما ثبت شد: <code>{phone}</code>",
+        parse_mode="HTML",
+        reply_markup=user_main_keyboard(is_admin=is_admin(uid)),
+    )
 
 
 @router.message(F.text == "🔙 بازگشت به منوی اصلی")
@@ -156,13 +244,18 @@ async def help_msg(message: Message):
 
 @router.message(F.text == "👤 مشخصات کاربری")
 async def user_profile(message: Message):
+    if not await check_user_access(message):
+        return
     uid = message.from_user.id
     stats = await db.user_stats(uid)
+    u = await db.get_bot_user(uid)
+    phone = (u or {}).get("phone") or "-"
     lines = [
         "👤 مشخصات کاربری\n",
         f"آیدی: <code>{uid}</code>",
         f"نام: {message.from_user.full_name or '-'}",
         f"یوزرنیم: @{message.from_user.username or '-'}",
+        f"شماره: <code>{phone}</code>",
         f"جمع حجم خریداری‌شده: {stats.get('total_volume', 0)} گیگ",
         f"تعداد سفارش موفق: {stats.get('paid_count', 0)}",
     ]
@@ -171,6 +264,8 @@ async def user_profile(message: Message):
 
 @router.message(F.text == "🖥 پنل من")
 async def my_panels(message: Message):
+    if not await check_user_access(message):
+        return
     rows = await db.get_user_panels(message.from_user.id)
     if not rows:
         await message.answer("هنوز پنلی برای شما تعریف نشده. با پشتیبانی تماس بگیرید.")
@@ -211,19 +306,8 @@ async def my_panels(message: Message):
 
 @router.message(F.text == "🛒 خرید حجم")
 async def buy_start(message: Message, state: FSMContext):
-    uid = message.from_user.id
-    if await db.is_blocked(uid) and not is_admin(uid):
-        await message.answer("🚫 بلاک هستید.")
+    if not await check_user_access(message, need_buy=True):
         return
-    if await db.get_setting("allow_buy", "1") != "1" and not is_admin(uid):
-        await message.answer("⛔️ خرید حجم فعلاً غیرفعال است.")
-        return
-    if await db.get_setting("require_verify", "0") == "1" and not is_admin(uid):
-        u = await db.get_bot_user(uid)
-        if not u or not u.get("is_verified"):
-            await message.answer("⛔️ ابتدا باید احراز هویت شوید.")
-            return
-
     panels = await db.get_panels()
     plans = await db.get_plans()
     if not panels or not plans:
@@ -1000,21 +1084,28 @@ async def search_do(message: Message, state: FSMContext):
     stats = await db.user_stats(uid)
     blocked = await db.is_blocked(uid)
     verified = bool(u and u.get("is_verified"))
-    auto_ap = bool(u and u.get("auto_approve"))
+    auto_ap = await db.should_auto_approve(uid)
+    phone = (u or {}).get("phone") or "-"
     panels = await db.get_user_panels(uid)
-    panel_txt = "\n".join(f"• {r['panel_name']}: {r['admin_username']}" for r in panels) or "ندارد"
-    text = (
-        f"👤 کاربر <code>{uid}</code>\n"
-        f"نام: {(u or {}).get('full_name') or '-'}\n"
-        f"یوزرنیم: @{(u or {}).get('username') or '-'}\n"
-        f"وضعیت: {'🚫 بلاک' if blocked else '✅'}\n"
-        f"احراز: {'✅' if verified else '❌'} | تأیید خودکار: {'✅' if auto_ap else '❌'}\n"
-        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB | سفارش: {stats['paid_count']}\n"
-        f"🖥 پنل اختصاصی:\n{panel_txt}"
-    )
+    panel_lines = [f"• {r['panel_name']}: {r['admin_username']}" for r in panels]
+    panel_txt = "\n".join(panel_lines) if panel_lines else "ندارد"
+    parts = [
+        f"👤 کاربر <code>{uid}</code>",
+        f"نام: {(u or {}).get('full_name') or '-'}",
+        f"یوزرنیم: @{(u or {}).get('username') or '-'}",
+        f"شماره: <code>{phone}</code>",
+        f"وضعیت: {'🚫 بلاک' if blocked else '✅ فعال'}",
+        f"احراز هویت: {'✅ تأیید شده' if verified else '❌ نشده'}",
+        f"تأیید خودکار: {'✅' if auto_ap else '❌'}",
+        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB | سفارش: {stats['paid_count']}",
+        "🖥 پنل اختصاصی:",
+        panel_txt,
+    ]
+    text = "\n".join(parts)
     await state.clear()
     await message.answer(text, parse_mode="HTML", reply_markup=user_search_kb(uid, blocked, verified, auto_ap))
     await message.answer("پنل ادمین:", reply_markup=admin_panel_keyboard())
+
 
 
 @router.callback_query(F.data.startswith("unblock_"))
@@ -1044,7 +1135,12 @@ async def ver(callback: CallbackQuery):
     uid = int(callback.data.split("_")[1])
     await db.upsert_bot_user(uid)
     await db.update_bot_user(uid, is_verified=1)
-    await callback.answer("احراز شد")
+    await callback.answer("✅ احراز هویت تأیید شد", show_alert=True)
+    try:
+        await callback.bot.send_message(uid, "✅ احراز هویت شما توسط ادمین تأیید شد. می‌توانید از ربات استفاده کنید.")
+    except Exception:
+        pass
+    await callback.message.answer(f"✅ کاربر <code>{uid}</code> احراز شد.", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("unverify_"))
@@ -1053,7 +1149,12 @@ async def unver(callback: CallbackQuery):
         return
     uid = int(callback.data.split("_")[1])
     await db.update_bot_user(uid, is_verified=0)
-    await callback.answer("حذف احراز")
+    await callback.answer("❌ احراز هویت لغو شد", show_alert=True)
+    try:
+        await callback.bot.send_message(uid, "❌ احراز هویت شما لغو شد. تا تأیید مجدد امکان استفاده از ربات را ندارید.")
+    except Exception:
+        pass
+    await callback.message.answer(f"❌ احراز کاربر <code>{uid}</code> لغو شد.", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("autoap_"))
@@ -1557,22 +1658,27 @@ async def uinfo(callback: CallbackQuery):
     stats = await db.user_stats(uid)
     blocked = await db.is_blocked(uid)
     verified = bool(u and u.get("is_verified"))
-    auto_ap = bool(u and u.get("auto_approve"))
+    auto_ap = await db.should_auto_approve(uid)
+    phone = (u or {}).get("phone") or "-"
     panels = await db.get_user_panels(uid)
-    panel_txt = "\n".join(
-        f"• {r['panel_name']}: {r['admin_username']}" for r in panels
-    ) or "ندارد"
-    text = (
-        f"👤 کاربر <code>{uid}</code>\n"
-        f"نام: {(u or {}).get('full_name') or '-'}\n"
-        f"یوزرنیم: @{(u or {}).get('username') or '-'}\n"
-        f"وضعیت: {'🚫 بلاک' if blocked else '✅'}\n"
-        f"احراز: {'✅' if verified else '❌'} | تأیید خودکار: {'✅' if auto_ap else '❌'}\n"
-        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB\n"
-        f"🖥 پنل اختصاصی:\n{panel_txt}"
-    )
+    panel_lines = [f"• {r['panel_name']}: {r['admin_username']}" for r in panels]
+    panel_txt = "\n".join(panel_lines) if panel_lines else "ندارد"
+    parts = [
+        f"👤 کاربر <code>{uid}</code>",
+        f"نام: {(u or {}).get('full_name') or '-'}",
+        f"یوزرنیم: @{(u or {}).get('username') or '-'}",
+        f"شماره: <code>{phone}</code>",
+        f"وضعیت: {'🚫 بلاک' if blocked else '✅ فعال'}",
+        f"احراز هویت: {'✅ تأیید شده' if verified else '❌ نشده'}",
+        f"تأیید خودکار: {'✅' if auto_ap else '❌'}",
+        f"واریزی: {stats['total_paid']:,}ت | حجم: {stats['total_volume']}GB",
+        "🖥 پنل اختصاصی:",
+        panel_txt,
+    ]
+    text = "\n".join(parts)
     await callback.message.answer(text, parse_mode="HTML", reply_markup=user_search_kb(uid, blocked, verified, auto_ap))
     await callback.answer()
+
 
 
 @router.callback_query(F.data.startswith("viewup_"))

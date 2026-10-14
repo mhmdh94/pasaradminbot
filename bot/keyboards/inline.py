@@ -29,6 +29,12 @@ def cancel_reply() -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
+def request_phone_keyboard() -> ReplyKeyboardMarkup:
+    b = ReplyKeyboardBuilder()
+    b.row(KeyboardButton(text="📱 ارسال شماره تلفن", request_contact=True))
+    return b.as_markup(resize_keyboard=True, one_time_keyboard=True)
+
+
 def panels_list(panels: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in panels:
