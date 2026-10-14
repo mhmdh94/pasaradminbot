@@ -136,20 +136,23 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         await message.answer("⛔️ ربات موقتاً غیرفعال است.")
         return
 
+    # only first-time start notifies admin
+    existing = await db.get_bot_user(uid)
+    is_first_start = existing is None
+
     await db.upsert_bot_user(
         uid,
         username=message.from_user.username,
         full_name=message.from_user.full_name or "",
     )
 
-    # notify admin (like Mirza)
-    if not is_admin(uid):
+    if is_first_start and not is_admin(uid):
         try:
             uname = f"@{message.from_user.username}" if message.from_user.username else "-"
             await bot.send_message(
                 settings.ADMIN_ID,
                 (
-                    "🆕 استارت ربات\n"
+                    "🆕 کاربر جدید — اولین استارت\n"
                     f"آیدی: <code>{uid}</code>\n"
                     f"نام: {message.from_user.full_name or '-'}\n"
                     f"یوزرنیم: {uname}"
@@ -159,7 +162,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
             )
             await report(
                 bot,
-                f"🆕 استارت | <code>{uid}</code> | {message.from_user.full_name or '-'} | {uname}",
+                f"🆕 کاربر جدید | <code>{uid}</code> | {message.from_user.full_name or '-'} | {uname}",
             )
         except Exception:
             pass

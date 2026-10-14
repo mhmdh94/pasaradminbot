@@ -226,7 +226,7 @@ update_bot() {
 
     if [ ! -d "$BOT_DIR" ]; then
         echo -e "${RED}Bot is not installed.${NC}"
-        exit 1
+        return 1
     fi
 
     systemctl stop $SERVICE_NAME 2>/dev/null || true
@@ -299,6 +299,9 @@ show_menu() {
         2)
             check_root
             update_bot
+            echo ""
+            read -p "Press Enter to return to menu..." _
+            show_menu
             ;;
         3)
             check_root
