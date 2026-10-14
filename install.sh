@@ -260,19 +260,52 @@ update_bot() {
 # ---------- Remove ----------
 remove_bot() {
     print_logo
-    echo -e "${RED}Are you sure you want to completely remove the bot? (y/n)${NC}"
+    echo -e "${RED}This will COMPLETELY remove:${NC}"
+    echo -e "  - systemd service: ${SERVICE_NAME}"
+    echo -e "  - bot directory:   ${BOT_DIR}"
+    echo -e "  - database & .env inside bot dir"
+    echo -e "  - install scripts in /tmp and /root"
+    echo -e "  - temp clone folders"
+    echo ""
+    echo -e "${RED}Are you sure? Type y to confirm: ${NC}"
     read -r ans
     if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
         echo "Cancelled."
-        exit 0
+        return 0
     fi
 
+    echo -e "${BLUE}[*] Stopping service...${NC}"
     systemctl stop $SERVICE_NAME 2>/dev/null || true
     systemctl disable $SERVICE_NAME 2>/dev/null || true
+
+    echo -e "${BLUE}[*] Removing systemd unit...${NC}"
     rm -f /etc/systemd/system/${SERVICE_NAME}.service
-    systemctl daemon-reload
+    rm -f /etc/systemd/system/${SERVICE_NAME}.service.bak 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed $SERVICE_NAME 2>/dev/null || true
+
+    echo -e "${BLUE}[*] Removing bot directory ${BOT_DIR}...${NC}"
     rm -rf "$BOT_DIR"
-    echo -e "${GREEN}Bot removed completely.${NC}"
+    # alternate paths if ever used
+    rm -rf /opt/PasarAdminBot /opt/pasaradminbot /root/pasaradminbot 2>/dev/null || true
+
+    echo -e "${BLUE}[*] Removing installer scripts & temp files...${NC}"
+    rm -f /tmp/install.sh /tmp/install_pasar*.sh 2>/dev/null || true
+    rm -f /root/install.sh /root/install_pasar*.sh 2>/dev/null || true
+    rm -rf /tmp/pasaradminbot_update_* /tmp/pasaradminbot_clone_* 2>/dev/null || true
+    # remove this script itself if run from a temp/copied path
+    if [ -n "${BASH_SOURCE[0]:-}" ]; then
+        SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+        case "$SELF" in
+            /tmp/*|/root/install.sh|/root/install_pasar*)
+                rm -f "$SELF" 2>/dev/null || true
+                ;;
+        esac
+    fi
+
+    echo ""
+    echo -e "${GREEN}[OK] Bot and installer files removed completely.${NC}"
+    echo -e "${YELLOW}Nothing left related to PasarAdminBot on this server.${NC}"
 }
 
 # ---------- Menu ----------
@@ -314,7 +347,8 @@ show_menu() {
                 check_root
                 remove_bot
                 echo ""
-                read -p "Press Enter to return to menu..." _
+                echo "Exiting installer."
+                exit 0
                 ;;
             4)
                 systemctl status $SERVICE_NAME --no-pager || echo "Service is not installed"
