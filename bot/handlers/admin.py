@@ -19,6 +19,7 @@ from bot.keyboards.inline import (
     start_notify_kb, user_panels_admin_kb, request_phone_keyboard,
 )
 from bot.services.pasarguard import get_panel_api
+from bot.utils.report import report, test_report_channel, normalize_chat_id
 
 router = Router()
 
@@ -99,13 +100,6 @@ def is_iran_phone(phone: str) -> bool:
 
 
 
-async def report(bot: Bot, text: str):
-    ch = await db.get_setting("report_channel", "")
-    if ch:
-        try:
-            await bot.send_message(ch, text, parse_mode="HTML")
-        except Exception:
-            pass
 
 
 async def go_back(message: Message, state: FSMContext, admin_ctx: bool = False):
@@ -215,6 +209,10 @@ async def on_contact(message: Message, state: FSMContext):
         f"✅ شماره شما ثبت شد: <code>{phone}</code>",
         parse_mode="HTML",
         reply_markup=user_main_keyboard(is_admin=is_admin(uid)),
+    )
+    await report(
+        message.bot,
+        f"📱 تأیید شماره\nکاربر: <code>{uid}</code>\nشماره: <code>{phone}</code>",
     )
 
 
@@ -402,6 +400,10 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
                         f"🚫 بلاک کاربر <code>{uid}</code> — ۱۰ بار یوزرنیم اشتباه",
                         parse_mode="HTML",
                     )
+                    await report(
+                        bot,
+                        f"🚫 بلاک خودکار <code>{uid}</code> — ۱۰ یوزرنیم اشتباه",
+                    )
                 except Exception:
                     pass
                 return
@@ -425,6 +427,14 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
         uid, data["panel_id"], username, data["plan_id"], data["volume_gb"], data["price"]
     )
     await state.update_data(order_id=order_id, username=username, price=data["price"], volume_gb=data["volume_gb"])
+
+    await report(
+        bot,
+        f"🛒 سفارش جدید\n"
+        f"کاربر: <code>{uid}</code>\n"
+        f"ادمین پنل: <code>{username}</code>\n"
+        f"{data['volume_gb']}GB | {data['price']:,} تومان",
+    )
 
     # check if any active discount codes exist
     discs = [d for d in await db.get_discounts() if d["is_active"] and d["used_count"] < d["max_uses"]]
@@ -452,11 +462,11 @@ async def process_username(message: Message, state: FSMContext, bot: Bot):
         f"👤 ادمین پنل: <code>{username}</code>\n"
         f"📦 حجم خرید: {data['volume_gb']} گیگ\n"
         f"💰 مبلغ: <b>{data['price']:,} تومان</b>\n\n"
-        f"💳 کارت:\n<code>{card}</code>\n"
+        f"💳 کارت:\n<code>{card}</code>\n\n"
     )
     if account:
-        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
-    text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
+        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n\n"
+    text += f"👤 صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
     await message.answer(text, parse_mode="HTML", reply_markup=cancel_reply())
 
 
@@ -510,7 +520,13 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
         "✅ رسید ارسال شد. منتظر تأیید بمانید.",
         reply_markup=user_main_keyboard(is_admin=is_admin(message.from_user.id)),
     )
-    await report(bot, f"🧾 رسید جدید | <code>{message.from_user.id}</code> | {order['username']} | {order['volume_gb']}GB")
+    await report(
+        bot,
+        f"🧾 رسید جدید\n"
+        f"کاربر: <code>{message.from_user.id}</code>\n"
+        f"ادمین پنل: <code>{order['username']}</code>\n"
+        f"{order['volume_gb']}GB | {order['price']:,} تومان",
+    )
 
 
 @router.message(Form.waiting_receipt)
@@ -903,15 +919,28 @@ async def set_rep(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(Form.set_report_channel)
-async def set_rep_s(message: Message, state: FSMContext):
+async def set_rep_s(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id) or message.text == "❌ انصراف":
         return
     val = message.text.strip()
     if val == "-":
-        val = ""
-    await db.set_setting("report_channel", val)
+        await db.set_setting("report_channel", "")
+        await state.clear()
+        await message.answer("🗑 کانال گزارش حذف شد.", reply_markup=admin_panel_keyboard())
+        return
+    ok, msg = await test_report_channel(bot, val)
+    if not ok:
+        await message.answer(msg, parse_mode="HTML", reply_markup=cancel_reply())
+        return
+    # store normalized form
+    norm = normalize_chat_id(val)
+    await db.set_setting("report_channel", str(norm) if norm is not None else val)
     await state.clear()
-    await message.answer("✅ کانال گزارش ذخیره شد.", reply_markup=admin_panel_keyboard())
+    await message.answer(
+        msg + "\n\nکانال گزارش ذخیره شد.",
+        parse_mode="HTML",
+        reply_markup=admin_panel_keyboard(),
+    )
 
 
 # --- cron ---
@@ -1119,6 +1148,7 @@ async def unb(callback: CallbackQuery):
     await db.unblock_user(uid)
     await callback.answer("آنبلاک شد")
     await callback.message.answer(f"✅ <code>{uid}</code> آنبلاک", parse_mode="HTML")
+    await report(callback.bot, f"✅ آنبلاک کاربر <code>{uid}</code>")
 
 
 @router.callback_query(F.data.startswith("block_"))
@@ -1129,6 +1159,7 @@ async def blk(callback: CallbackQuery):
     await db.block_user(uid, "manual")
     await callback.answer("بلاک شد")
     await callback.message.answer(f"🚫 <code>{uid}</code> بلاک", parse_mode="HTML")
+    await report(callback.bot, f"🚫 بلاک کاربر <code>{uid}</code> (دستی)")
 
 
 @router.callback_query(F.data.startswith("verify_"))
@@ -1144,6 +1175,7 @@ async def ver(callback: CallbackQuery):
     except Exception:
         pass
     await callback.message.answer(f"✅ کاربر <code>{uid}</code> احراز شد.", parse_mode="HTML")
+    await report(callback.bot, f"✅ احراز هویت کاربر <code>{uid}</code>")
 
 
 @router.callback_query(F.data.startswith("unverify_"))
@@ -1158,6 +1190,7 @@ async def unver(callback: CallbackQuery):
     except Exception:
         pass
     await callback.message.answer(f"❌ احراز کاربر <code>{uid}</code> لغو شد.", parse_mode="HTML")
+    await report(callback.bot, f"❌ لغو احراز کاربر <code>{uid}</code>")
 
 
 @router.callback_query(F.data.startswith("autoap_"))
@@ -1260,6 +1293,10 @@ async def assign_save(message: Message, state: FSMContext):
         f"✅ پنل برای کاربر {data['assign_uid']} با ادمین «{uname}» ثبت شد.",
         reply_markup=admin_panel_keyboard(),
     )
+    await report(
+        message.bot,
+        f"🖥 اختصاص پنل\nکاربر: <code>{data['assign_uid']}</code>\nادمین پنل: <code>{uname}</code>",
+    )
 
 
 @router.message(F.text == "🚫 کاربران بلاک‌شده")
@@ -1316,7 +1353,13 @@ async def approve(callback: CallbackQuery, bot: Bot):
             )
         except Exception:
             pass
-        await report(bot, f"✅ تأیید | {order['username']} | {order['volume_gb']}GB | {order['price']:,}ت")
+        await report(
+            bot,
+            f"✅ تأیید دستی پرداخت\n"
+            f"کاربر: <code>{order['user_id']}</code>\n"
+            f"ادمین پنل: <code>{order['username']}</code>\n"
+            f"{order['volume_gb']}GB | {order['price']:,} تومان",
+        )
     else:
         await callback.message.answer(f"❌ {result['message']}")
 
@@ -1353,6 +1396,12 @@ async def reject(callback: CallbackQuery, bot: Bot):
         await bot.send_message(order["user_id"], "❌ پرداخت رد شد.")
     except Exception:
         pass
+    await report(
+        bot,
+        f"❌ رد پرداخت\nکاربر: <code>{order['user_id']}</code>\n"
+        f"ادمین پنل: <code>{order['username']}</code>\n"
+        f"{order['volume_gb']}GB | {order['price']:,} تومان",
+    )
 
 
 @router.message(F.text == "ℹ️ وضعیت ربات_DISABLED")
@@ -1580,11 +1629,11 @@ async def skip_disc(callback: CallbackQuery, state: FSMContext):
         f"👤 ادمین پنل: <code>{order['username']}</code>\n"
         f"📦 حجم: {order['volume_gb']} گیگ\n"
         f"💰 مبلغ: <b>{order['price']:,} تومان</b>\n\n"
-        f"💳 کارت:\n<code>{card}</code>\n"
+        f"💳 کارت:\n<code>{card}</code>\n\n"
     )
     if account:
-        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
-    text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
+        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n\n"
+    text += f"👤 صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
     await callback.message.edit_text(text, parse_mode="HTML")
     await callback.message.answer("عکس رسید:", reply_markup=cancel_reply())
     await callback.answer()
@@ -1620,11 +1669,11 @@ async def enter_disc(message: Message, state: FSMContext):
         f"📦 حجم: {order['volume_gb']} گیگ\n"
         f"💰 مبلغ قبلی: {order['price']:,}\n"
         f"💰 مبلغ نهایی: <b>{new_price:,} تومان</b>\n\n"
-        f"💳 کارت:\n<code>{card}</code>\n"
+        f"💳 کارت:\n<code>{card}</code>\n\n"
     )
     if account:
-        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n"
-    text += f"صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
+        text += f"🏦 حساب/شبا:\n<code>{account}</code>\n\n"
+    text += f"👤 صاحب حساب: {owner}\n\nعکس رسید را ارسال کنید."
     await message.answer(text, parse_mode="HTML", reply_markup=cancel_reply())
 
 

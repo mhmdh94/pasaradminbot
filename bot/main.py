@@ -15,6 +15,7 @@ from bot.config import settings
 from bot.database import db
 from bot.handlers.admin import router as admin_router
 from bot.services.pasarguard import get_panel_api
+from bot.utils.report import report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -171,6 +172,13 @@ async def process_auto_approvals(bot: Bot):
             except Exception:
                 pass
             logger.info("auto-approved order %s", fresh2["id"])
+            await report(
+                bot,
+                f"✅ تأیید خودکار\n"
+                f"کاربر: <code>{fresh2['user_id']}</code>\n"
+                f"ادمین پنل: <code>{fresh2['username']}</code>\n"
+                f"{fresh2['volume_gb']}GB | {fresh2['price']:,} تومان",
+            )
     except Exception as e:
         logger.error("auto approve: %s", e)
 
