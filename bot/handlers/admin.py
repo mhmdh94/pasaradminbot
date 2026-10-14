@@ -17,6 +17,7 @@ from bot.keyboards.inline import (
     discount_actions, payment_discount_kb, backup_settings_keyboard,
     bot_settings_keyboard, cron_settings_keyboard, user_search_kb,
     start_notify_kb, user_panels_admin_kb, request_phone_keyboard,
+    products_menu_keyboard, users_menu_keyboard,
 )
 from bot.services.pasarguard import get_panel_api
 from bot.utils.report import report, test_report_channel, normalize_chat_id
@@ -240,6 +241,20 @@ async def help_msg(message: Message):
         "۲) واریز و ارسال عکس رسید\n"
         "۳) بعد از تأیید، حجم به ادمین پنل اضافه می‌شود.\n\n"
         "«پنل‌های من» فقط برای پنل‌هایی است که ادمین برای شما تعریف کرده."
+    )
+
+
+
+@router.message(F.text == "💬 پشتیبانی")
+async def support_btn(message: Message):
+    # link to admin
+    admin_id = settings.ADMIN_ID
+    await message.answer(
+        f"💬 پشتیبانی\n\n"
+        f"برای ارتباط با پشتیبانی پیام دهید:\n"
+        f"آیدی ادمین: <code>{admin_id}</code>\n"
+        f"یا از طریق تلگرام به ادمین پیام بفرستید.",
+        parse_mode="HTML",
     )
 
 
@@ -538,6 +553,73 @@ async def receipt_wrong(message: Message):
 
 # ==================== ADMIN ====================
 
+
+@router.message(F.text == "📦 محصولات و پنل")
+async def products_menu_msg(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("📦 محصولات و پنل:", reply_markup=products_menu_keyboard())
+
+
+@router.callback_query(F.data == "products_menu")
+async def products_menu_cb(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    try:
+        await callback.message.edit_text("📦 محصولات و پنل:", reply_markup=products_menu_keyboard())
+    except Exception:
+        await callback.message.answer("📦 محصولات و پنل:", reply_markup=products_menu_keyboard())
+    await callback.answer()
+
+
+
+@router.message(F.text == "👥 مدیریت کاربران")
+async def users_menu_msg(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("👥 مدیریت کاربران:", reply_markup=users_menu_keyboard())
+
+
+@router.callback_query(F.data == "users_menu")
+async def users_menu_cb(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    try:
+        await callback.message.edit_text("👥 مدیریت کاربران:", reply_markup=users_menu_keyboard())
+    except Exception:
+        await callback.message.answer("👥 مدیریت کاربران:", reply_markup=users_menu_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "search_user_btn")
+async def search_user_btn_cb(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.set_state(Form.search_user)
+    await state.update_data(admin_context=True)
+    await callback.message.answer("آیدی عددی کاربر را بفرستید:", reply_markup=cancel_reply())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "blocked_users_btn")
+async def blocked_users_btn_cb(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    await callback.answer()
+    # reuse list logic
+    rows = await db.get_blocked_users()
+    if not rows:
+        await callback.message.answer("هیچ کاربر بلاک‌شده‌ای نیست.")
+        return
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    b = InlineKeyboardBuilder()
+    for r in rows:
+        b.row(InlineKeyboardButton(text=f"آنبلاک {r['user_id']}", callback_data=f"unblock_{r['user_id']}"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="users_menu"))
+    await callback.message.answer("🚫 کاربران بلاک‌شده:", reply_markup=b.as_markup())
+
+
 @router.message(F.text == "⚙️ پنل ادمین")
 async def admin_panel(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -621,7 +703,7 @@ async def p_pass(message: Message, state: FSMContext):
     await state.clear()
     api = await get_panel_api(pid)
     test = await api.test_connection() if api else {"success": False, "message": "خطا"}
-    await message.answer(f"✅ پنل اضافه شد.\n{test['message']}", reply_markup=admin_panel_keyboard())
+    await message.answer(f"✅ پنل اضافه شد.\n{test['message']}", reply_markup=products_menu_keyboard())
 
 
 @router.callback_query(F.data.regexp(r"^panel_\d+$"))
@@ -785,7 +867,7 @@ async def save_price(message: Message, state: FSMContext):
 
 
 # --- finance ---
-@router.message(F.text == "💰 تنظیمات مالی")
+@router.message(F.text.in_({"💰 تنظیمات مالی", "💰 مالی و پرداخت"}))
 async def finance(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -876,7 +958,7 @@ async def tog_auto_def(callback: CallbackQuery):
 
 
 # --- bot settings ---
-@router.message(F.text == "⚙️ تنظیمات ربات")
+@router.message(F.text.in_({"⚙️ تنظیمات ربات", "⚙️ تنظیمات سیستم"}))
 async def bot_settings(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -1778,3 +1860,8 @@ async def rmup(callback: CallbackQuery):
 async def cmd_cancel(message: Message, state: FSMContext):
     data = await state.get_data()
     await go_back(message, state, bool(data.get("admin_context")) and is_admin(message.from_user.id))
+
+
+@router.callback_query(F.data == "noop")
+async def noop_cb(callback: CallbackQuery):
+    await callback.answer()

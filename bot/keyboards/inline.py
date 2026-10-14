@@ -3,23 +3,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 
 
+# ==================== USER ====================
+
 def user_main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="🛒 خرید حجم"))
     b.row(KeyboardButton(text="👤 مشخصات کاربری"), KeyboardButton(text="🖥 پنل من"))
-    b.row(KeyboardButton(text="ℹ️ راهنما"))
+    b.row(KeyboardButton(text="ℹ️ راهنما"), KeyboardButton(text="💬 پشتیبانی"))
     if is_admin:
         b.row(KeyboardButton(text="⚙️ پنل ادمین"))
-    return b.as_markup(resize_keyboard=True)
-
-
-def admin_panel_keyboard() -> ReplyKeyboardMarkup:
-    b = ReplyKeyboardBuilder()
-    b.row(KeyboardButton(text="📊 آمار ربات"))
-    b.row(KeyboardButton(text="📦 مدیریت پلن‌ها"), KeyboardButton(text="🖥 مدیریت پنل ربات"))
-    b.row(KeyboardButton(text="💰 تنظیمات مالی"), KeyboardButton(text="⚙️ تنظیمات ربات"))
-    b.row(KeyboardButton(text="🔍 سرچ کاربر"), KeyboardButton(text="🚫 کاربران بلاک‌شده"))
-    b.row(KeyboardButton(text="🔙 بازگشت به منوی اصلی"))
     return b.as_markup(resize_keyboard=True)
 
 
@@ -35,15 +27,46 @@ def request_phone_keyboard() -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True, one_time_keyboard=True)
 
 
+# ==================== ADMIN MAIN ====================
+
+def admin_panel_keyboard() -> ReplyKeyboardMarkup:
+    """Top-level admin categories only."""
+    b = ReplyKeyboardBuilder()
+    b.row(KeyboardButton(text="📊 آمار ربات"))
+    b.row(KeyboardButton(text="📦 محصولات و پنل"))
+    b.row(KeyboardButton(text="💰 مالی و پرداخت"))
+    b.row(KeyboardButton(text="👥 مدیریت کاربران"))
+    b.row(KeyboardButton(text="⚙️ تنظیمات سیستم"))
+    b.row(KeyboardButton(text="🔙 بازگشت به منوی اصلی"))
+    return b.as_markup(resize_keyboard=True)
+
+
+def products_menu_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📦 مدیریت پلن‌ها", callback_data="manage_plans"))
+    b.row(InlineKeyboardButton(text="🖥 مدیریت پنل ربات", callback_data="manage_panels"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
+    return b.as_markup()
+
+
+def users_menu_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="🔍 سرچ کاربر", callback_data="search_user_btn"))
+    b.row(InlineKeyboardButton(text="🚫 کاربران بلاک‌شده", callback_data="blocked_users_btn"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
+    return b.as_markup()
+
+
+# ==================== PANELS / PLANS ====================
+
 def panels_list(panels: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in panels:
         st = "✅" if p["is_active"] else "❌"
         b.row(InlineKeyboardButton(text=f"{st} {p['name']}", callback_data=f"panel_{p['id']}"))
-    # only allow add if no panel exists
     if not panels:
         b.row(InlineKeyboardButton(text="➕ افزودن پنل", callback_data="add_panel"))
-    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="products_menu"))
     return b.as_markup()
 
 
@@ -66,7 +89,7 @@ def plans_list(plans: List[Dict]) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=f"{p['price']:,} تومان", callback_data=f"plan_{p['id']}"),
         )
     b.row(InlineKeyboardButton(text="➕ افزودن پلن", callback_data="add_plan"))
-    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="products_menu"))
     return b.as_markup()
 
 
@@ -80,6 +103,8 @@ def plan_actions(plan_id: int) -> InlineKeyboardMarkup:
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="manage_plans"))
     return b.as_markup()
 
+
+# ==================== BUY FLOW ====================
 
 def buy_select_panel(panels: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -113,17 +138,21 @@ def confirm_order(order_id: int, user_id: int = 0) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def start_notify_kb(user_id: int) -> InlineKeyboardMarkup:
+def payment_discount_kb(order_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="👤 اطلاعات کاربر", callback_data=f"uinfo_{user_id}"))
+    b.row(InlineKeyboardButton(text="🏷 کد تخفیف دارم", callback_data=f"use_disc_{order_id}"))
+    b.row(InlineKeyboardButton(text="⏭ بدون تخفیف، ارسال رسید", callback_data=f"skip_disc_{order_id}"))
+    b.row(InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_buy"))
     return b.as_markup()
 
+
+# ==================== FINANCE ====================
 
 def finance_keyboard(auto_on: bool = False, auto_minutes: int = 0) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="💳 اطلاعات حساب", callback_data="account_info"))
-    b.row(InlineKeyboardButton(text="🏷 مدیریت کد تخفیف", callback_data="discount_menu"))
-    auto_txt = f"⚡ تأیید خودکار: {'✅ روشن' if auto_on else '❌ خاموش'}"
+    b.row(InlineKeyboardButton(text="🏷 کد تخفیف", callback_data="discount_menu"))
+    auto_txt = f"⚡ تأیید خودکار: ✅ روشن" if auto_on else "⚡ تأیید خودکار: ❌ خاموش"
     b.row(InlineKeyboardButton(text=auto_txt, callback_data="toggle_auto_approve_default"))
     if auto_on:
         b.row(InlineKeyboardButton(
@@ -164,11 +193,26 @@ def discount_actions(disc_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def payment_discount_kb(order_id: int) -> InlineKeyboardMarkup:
+# ==================== SYSTEM SETTINGS ====================
+
+def bot_settings_keyboard(s: Dict[str, str]) -> InlineKeyboardMarkup:
+    def on(k):
+        return "✅ روشن" if s.get(k) == "1" else "❌ خاموش"
+
     b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text="🏷 کد تخفیف دارم", callback_data=f"use_disc_{order_id}"))
-    b.row(InlineKeyboardButton(text="⏭ بدون تخفیف، ارسال رسید", callback_data=f"skip_disc_{order_id}"))
-    b.row(InlineKeyboardButton(text="❌ انصراف", callback_data="cancel_buy"))
+    # security / access
+    b.row(InlineKeyboardButton(text="—— 🛡 دسترسی ——", callback_data="noop"))
+    b.row(InlineKeyboardButton(text=f"وضعیت ربات: {on('bot_enabled')}", callback_data="tog_bot_enabled"))
+    b.row(InlineKeyboardButton(text=f"امکان خرید حجم: {on('allow_buy')}", callback_data="tog_allow_buy"))
+    b.row(InlineKeyboardButton(text=f"تأیید شماره: {on('require_phone')}", callback_data="tog_require_phone"))
+    b.row(InlineKeyboardButton(text=f"شماره ایرانی: {on('require_iran_phone')}", callback_data="tog_require_iran_phone"))
+    b.row(InlineKeyboardButton(text=f"احراز هویت: {on('require_verify')}", callback_data="tog_require_verify"))
+    # system
+    b.row(InlineKeyboardButton(text="—— 🛠 سیستم ——", callback_data="noop"))
+    b.row(InlineKeyboardButton(text="📢 کانال گزارش", callback_data="set_report_channel"))
+    b.row(InlineKeyboardButton(text="⏰ تنظیمات کرون", callback_data="cron_from_settings"))
+    b.row(InlineKeyboardButton(text="🗄 تنظیمات بک‌آپ", callback_data="backup_from_settings"))
+    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
     return b.as_markup()
 
 
@@ -181,23 +225,6 @@ def backup_settings_keyboard() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def bot_settings_keyboard(s: Dict[str, str]) -> InlineKeyboardMarkup:
-    def on(k):
-        return "✅ روشن" if s.get(k) == "1" else "❌ خاموش"
-
-    b = InlineKeyboardBuilder()
-    b.row(InlineKeyboardButton(text=f"وضعیت ربات: {on('bot_enabled')}", callback_data="tog_bot_enabled"))
-    b.row(InlineKeyboardButton(text=f"امکان خرید حجم: {on('allow_buy')}", callback_data="tog_allow_buy"))
-    b.row(InlineKeyboardButton(text=f"تأیید شماره: {on('require_phone')}", callback_data="tog_require_phone"))
-    b.row(InlineKeyboardButton(text=f"شماره ایرانی: {on('require_iran_phone')}", callback_data="tog_require_iran_phone"))
-    b.row(InlineKeyboardButton(text=f"احراز هویت: {on('require_verify')}", callback_data="tog_require_verify"))
-    b.row(InlineKeyboardButton(text="📢 کانال گزارش", callback_data="set_report_channel"))
-    b.row(InlineKeyboardButton(text="⏰ تنظیمات کرون", callback_data="cron_from_settings"))
-    b.row(InlineKeyboardButton(text="🗄 تنظیمات بک‌آپ", callback_data="backup_from_settings"))
-    b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_menu"))
-    return b.as_markup()
-
-
 def cron_settings_keyboard() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.row(InlineKeyboardButton(text="⏰ فاصله چک حجم", callback_data="set_volume_check_hours"))
@@ -205,6 +232,8 @@ def cron_settings_keyboard() -> InlineKeyboardMarkup:
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="bot_settings_back"))
     return b.as_markup()
 
+
+# ==================== USER ADMIN TOOLS ====================
 
 def user_search_kb(uid: int, blocked: bool, verified: bool, auto_ap: bool) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -234,4 +263,10 @@ def user_panels_admin_kb(uid: int, rows: List[Dict]) -> InlineKeyboardMarkup:
             callback_data=f"rmup_{uid}_{r['panel_id']}_{r['admin_username']}",
         ))
     b.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"uinfo_{uid}"))
+    return b.as_markup()
+
+
+def start_notify_kb(uid: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="👤 اطلاعات کاربر", callback_data=f"uinfo_{uid}"))
     return b.as_markup()
