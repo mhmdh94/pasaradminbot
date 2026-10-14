@@ -52,14 +52,80 @@ check_ubuntu() {
 
 install_dependencies() {
     echo -e "${BLUE}[*] Updating system and installing dependencies...${NC}"
+    export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y python3 python3-pip python3-venv git curl wget unzip software-properties-common
+    apt-get install -y \
+        software-properties-common \
+        ca-certificates \
+        curl wget git unzip \
+        build-essential \
+        libffi-dev \
+        || true
 
-    if ! command -v python3 &>/dev/null; then
-        echo -e "${RED}[ERROR] python3 was not installed.${NC}"
-        exit 1
+    # Prefer Python 3.12 (works on Ubuntu 22/24/26). Avoid 3.14 — pydantic has no wheels yet.
+    ensure_python
+    echo -e "${GREEN}[OK] Dependencies ready. Python: $($PYTHON_BIN --version 2>&1)${NC}"
+}
+
+ensure_python() {
+    # Already have a good version?
+    for ver in 3.12 3.11 3.10; do
+        if command -v "python${ver}" &>/dev/null; then
+            if "python${ver}" -c "import sys; raise SystemExit(0 if sys.version_info[:2]==tuple(map(int,'${ver}'.split('.'))) else 1)" 2>/dev/null; then
+                PYTHON_BIN="python${ver}"
+                # ensure venv package
+                apt-get install -y "python${ver}-venv" "python${ver}-dev" 2>/dev/null || true
+                echo -e "${GREEN}[OK] Using existing ${PYTHON_BIN}${NC}"
+                return 0
+            fi
+        fi
+    done
+
+    echo -e "${BLUE}[*] Installing Python 3.12 (compatible with bot packages)...${NC}"
+
+    # Ubuntu 24.04 usually has 3.12 in main repos
+    if apt-cache show python3.12 &>/dev/null; then
+        apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip || true
     fi
-    echo -e "${GREEN}[OK] Dependencies installed.${NC}"
+
+    if ! command -v python3.12 &>/dev/null; then
+        # deadsnakes PPA for 22.04 / newer with only 3.14
+        apt-get install -y software-properties-common
+        add-apt-repository -y ppa:deadsnakes/ppa || true
+        apt-get update -y
+        apt-get install -y python3.12 python3.12-venv python3.12-dev || true
+    fi
+
+    if command -v python3.12 &>/dev/null; then
+        PYTHON_BIN="python3.12"
+        return 0
+    fi
+
+    # Fallback 3.11
+    if ! command -v python3.11 &>/dev/null; then
+        apt-get install -y python3.11 python3.11-venv python3.11-dev 2>/dev/null || true
+    fi
+    if command -v python3.11 &>/dev/null; then
+        PYTHON_BIN="python3.11"
+        return 0
+    fi
+
+    # Last resort: system python3 if <= 3.13
+    if command -v python3 &>/dev/null; then
+        PY_MINOR=$($PYTHON_BIN -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 99)
+        # use real python3
+        PY_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 99)
+        if [ "$PY_MINOR" -le 13 ] 2>/dev/null; then
+            PYTHON_BIN="python3"
+            apt-get install -y python3-venv python3-dev python3-pip || true
+            echo -e "${YELLOW}[!] Using system python3 ($(python3 --version))${NC}"
+            return 0
+        fi
+    fi
+
+    echo -e "${RED}[ERROR] Could not install Python 3.10–3.12. pydantic does not support Python 3.14 yet.${NC}"
+    echo -e "${RED}Install python3.12 manually, then re-run installer.${NC}"
+    exit 1
 }
 
 clone_or_copy_bot() {
@@ -111,14 +177,34 @@ clone_or_copy_bot() {
 }
 
 create_venv_and_install() {
-    echo -e "${BLUE}[*] Creating virtualenv and installing Python packages...${NC}"
+    echo -e "${BLUE}[*] Creating virtualenv with ${PYTHON_BIN} and installing packages...${NC}"
     cd "$BOT_DIR"
-    python3 -m venv venv
+
+    # Remove broken venv if any
+    rm -rf venv
+
+    if ! $PYTHON_BIN -m venv venv; then
+        echo -e "${YELLOW}[!] venv module missing, installing...${NC}"
+        # try to install matching venv package
+        VER=$($PYTHON_BIN -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        apt-get install -y "python${VER}-venv" "python${VER}-dev" || apt-get install -y python3-venv
+        $PYTHON_BIN -m venv venv
+    fi
+
+    # shellcheck disable=SC1091
     source venv/bin/activate
-    pip install --upgrade pip
-    pip install -r requirements.txt
+
+    # Prefer binary wheels — avoid compiling pydantic-core / rust
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
+    export PIP_DEFAULT_TIMEOUT=120
+    python -m pip install --upgrade pip setuptools wheel
+    python -m pip install --prefer-binary --no-cache-dir -r requirements.txt
+
+    # quick import check
+    python -c "import aiogram, aiosqlite, httpx, pydantic; print('imports ok')"
+
     deactivate
-    echo -e "${GREEN}[OK] Python packages installed.${NC}"
+    echo -e "${GREEN}[OK] Python packages installed with $($PYTHON_BIN --version 2>&1).${NC}"
 }
 
 get_config() {
