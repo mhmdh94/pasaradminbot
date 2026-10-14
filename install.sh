@@ -246,10 +246,12 @@ update_bot() {
         rm -rf "$TMP_CLONE"
     fi
 
-    cd "$BOT_DIR"
-    source venv/bin/activate
-    pip install -r requirements.txt --upgrade
-    deactivate
+    (
+        cd "$BOT_DIR"
+        source venv/bin/activate
+        pip install -r requirements.txt --upgrade
+        deactivate
+    )
 
     systemctl start $SERVICE_NAME
     echo -e "${GREEN}[OK] Update completed.${NC}"
@@ -275,55 +277,67 @@ remove_bot() {
 
 # ---------- Menu ----------
 show_menu() {
-    print_logo
-    echo -e "${CYAN}1)${NC} Install bot"
-    echo -e "${CYAN}2)${NC} Update bot"
-    echo -e "${CYAN}3)${NC} Remove bot (or: bash install.sh remove)"
-    echo -e "${CYAN}4)${NC} Service status"
-    echo -e "${CYAN}5)${NC} Restart service"
-    echo -e "${CYAN}6)${NC} Exit"
-    echo ""
-    read -p "Select an option [1-6]: " option
+    while true; do
+        # always work from a known directory (update_bot does cd)
+        cd /root 2>/dev/null || cd / || true
 
-    case $option in
-        1)
-            check_root
-            check_ubuntu
-            install_dependencies
-            clone_or_copy_bot
-            create_venv_and_install
-            get_config
-            create_systemd_service
-            show_final_info
-            ;;
-        2)
-            check_root
-            update_bot
-            echo ""
-            read -p "Press Enter to return to menu..." _
-            show_menu
-            ;;
-        3)
-            check_root
-            remove_bot
-            ;;
-        4)
-            systemctl status $SERVICE_NAME --no-pager || echo "Service is not installed"
-            ;;
-        5)
-            systemctl restart $SERVICE_NAME
-            sleep 1
-            systemctl status $SERVICE_NAME --no-pager || true
-            ;;
-        6)
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Invalid option${NC}"
-            sleep 1
-            show_menu
-            ;;
-    esac
+        print_logo
+        echo -e "${CYAN}1)${NC} Install bot"
+        echo -e "${CYAN}2)${NC} Update bot"
+        echo -e "${CYAN}3)${NC} Remove bot"
+        echo -e "${CYAN}4)${NC} Service status"
+        echo -e "${CYAN}5)${NC} Restart service"
+        echo -e "${CYAN}6)${NC} Exit"
+        echo ""
+        read -p "Select an option [1-6]: " option
+
+        case $option in
+            1)
+                check_root
+                check_ubuntu
+                install_dependencies
+                clone_or_copy_bot
+                create_venv_and_install
+                get_config
+                create_systemd_service
+                show_final_info
+                echo ""
+                read -p "Press Enter to return to menu..." _
+                ;;
+            2)
+                check_root
+                update_bot
+                echo ""
+                read -p "Press Enter to return to menu..." _
+                ;;
+            3)
+                check_root
+                remove_bot
+                echo ""
+                read -p "Press Enter to return to menu..." _
+                ;;
+            4)
+                systemctl status $SERVICE_NAME --no-pager || echo "Service is not installed"
+                echo ""
+                read -p "Press Enter to return to menu..." _
+                ;;
+            5)
+                systemctl restart $SERVICE_NAME
+                sleep 1
+                systemctl status $SERVICE_NAME --no-pager || true
+                echo ""
+                read -p "Press Enter to return to menu..." _
+                ;;
+            6)
+                echo "Bye."
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid option${NC}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # Main
@@ -339,6 +353,8 @@ if [ "$1" == "install" ]; then
 elif [ "$1" == "update" ]; then
     check_root
     update_bot
+    # after CLI update, open interactive menu
+    show_menu
 elif [ "$1" == "remove" ]; then
     check_root
     remove_bot
